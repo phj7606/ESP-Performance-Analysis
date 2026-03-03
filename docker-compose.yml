@@ -1,0 +1,105 @@
+services:
+  # TimescaleDB: PostgreSQL 16 + TimescaleDB 확장
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-espuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-esppass}
+      POSTGRES_DB: ${POSTGRES_DB:-espdb}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # DB 최초 생성 시 자동 실행되는 초기화 스크립트
+      - ./backend/app/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-espuser} -d ${POSTGRES_DB:-espdb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - esp-net
+
+  # Redis: Celery 브로커 및 결과 백엔드
+  redis:
+    image: redis:7-alpine
+    # appendonly: Celery 작업 상태를 재시작 후에도 유지
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    networks:
+      - esp-net
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://espuser:esppass@timescaledb:5432/espdb}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE:-52428800}
+    volumes:
+      - ./backend:/app
+    # TimescaleDB가 healthy 상태가 된 후 기동 (DB 미준비 연결 에러 방지)
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - esp-net
+
+  # Celery Worker: ML 분석 비동기 처리
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://espuser:esppass@timescaledb:5432/espdb}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: celery -A app.worker.celery_app worker --loglevel=info
+    networks:
+      - esp-net
+
+  # Next.js Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      # 브라우저에서 직접 요청하는 주소 (외부)
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      # Next.js 서버(컨테이너 내부)에서 rewrites 대상으로 사용하는 주소 (Docker 내부망)
+      BACKEND_INTERNAL_URL: http://backend:8000
+    volumes:
+      - ./frontend:/app
+      # node_modules는 컨테이너 내부 것 사용 (호스트와 분리)
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    networks:
+      - esp-net
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  esp-net:
+    driver: bridge
