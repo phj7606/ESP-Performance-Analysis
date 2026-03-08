@@ -1,8 +1,8 @@
 """
-Well 조회 API.
-- 전체 목록 조회
-- 상세 정보 조회
-- 시계열 데이터 조회 (동적 컬럼 선택, 날짜 범위 필터)
+Well query API.
+- List all wells
+- Retrieve well details
+- Retrieve time-series data (dynamic column selection, date range filter)
 """
 from datetime import date
 from typing import Optional
@@ -20,7 +20,7 @@ from app.schemas.well import WellListResponse, WellResponse
 
 router = APIRouter()
 
-# 조회 가능한 컬럼 화이트리스트 (SQL injection 방지)
+# Whitelist of queryable columns (prevents SQL injection)
 ALLOWED_COLUMNS = {
     "choke", "whp", "flt", "casing_pressure", "casing_pressure_2",
     "vfd_freq", "motor_volts", "motor_current", "motor_power",
@@ -37,15 +37,15 @@ ALLOWED_COLUMNS = {
 @router.get("/wells", response_model=WellListResponse)
 async def list_wells(db: AsyncSession = Depends(get_db)):
     """
-    전체 Well 목록 조회.
-    각 Well의 데이터 건수 및 날짜 범위를 서브쿼리로 포함.
+    Retrieve the full list of wells.
+    Includes data count and date range for each well via subquery.
     """
     result = await db.execute(select(Well).order_by(Well.created_at.desc()))
     wells = result.scalars().all()
 
     well_responses = []
     for well in wells:
-        # 데이터 건수 및 날짜 범위 조회
+        # Query data count and date range
         stats = await db.execute(
             select(
                 func.count(EspDailyData.date).label("cnt"),
@@ -78,14 +78,14 @@ async def list_wells(db: AsyncSession = Depends(get_db)):
 
 @router.get("/wells/{well_id}", response_model=WellResponse)
 async def get_well(well_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Well 상세 정보 조회"""
+    """Retrieve well details"""
     result = await db.execute(select(Well).where(Well.id == well_id))
     well = result.scalar_one_or_none()
 
     if not well:
-        raise HTTPException(status_code=404, detail="Well을 찾을 수 없습니다.")
+        raise HTTPException(status_code=404, detail="Well not found.")
 
-    # 데이터 통계
+    # Data statistics
     stats = await db.execute(
         select(
             func.count(EspDailyData.date).label("cnt"),
@@ -114,52 +114,52 @@ async def get_well(well_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 @router.get("/wells/{well_id}/data", response_model=EspDataResponse)
 async def get_well_data(
     well_id: uuid.UUID,
-    start_date: Optional[date] = Query(None, description="시작 날짜 (YYYY-MM-DD)"),
-    end_date: Optional[date] = Query(None, description="종료 날짜 (YYYY-MM-DD)"),
+    start_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
     columns: Optional[str] = Query(
-        None, description="쉼표 구분 컬럼 목록 (미지정 시 전체)"
+        None, description="Comma-separated column list (all columns if not specified)"
     ),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Well 시계열 데이터 조회.
-    - columns 파라미터로 필요한 컬럼만 요청 가능 (응답 경량화)
-    - 최대 3000행 제한 (브라우저 렌더링 성능)
+    Retrieve well time-series data.
+    - Use the columns parameter to request only the needed columns (reduces response size)
+    - Maximum 3000 rows (browser rendering performance limit)
     """
-    # Well 존재 확인
+    # Verify well exists
     well_result = await db.execute(select(Well.id).where(Well.id == well_id))
     if not well_result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Well을 찾을 수 없습니다.")
+        raise HTTPException(status_code=404, detail="Well not found.")
 
-    # 동적 컬럼 선택: 화이트리스트 기준으로 필터링 (SQL injection 방지)
+    # Dynamic column selection: filter against whitelist (prevents SQL injection)
     requested_cols = []
     if columns:
         requested_cols = [c.strip() for c in columns.split(",") if c.strip() in ALLOWED_COLUMNS]
 
     if requested_cols:
-        # 날짜 + 요청 컬럼만 선택
+        # Select date + requested columns only
         select_cols = [EspDailyData.date, EspDailyData.well_id] + [
             getattr(EspDailyData, col) for col in requested_cols
         ]
         query = select(*select_cols)
     else:
-        # 전체 컬럼 선택
+        # Select all columns
         query = select(EspDailyData)
 
-    # 필터 조건 적용
+    # Apply filter conditions
     query = query.where(EspDailyData.well_id == well_id)
     if start_date:
         query = query.where(EspDailyData.date >= start_date)
     if end_date:
         query = query.where(EspDailyData.date <= end_date)
 
-    # 날짜 오름차순 정렬, 최대 3000행
+    # Sort by date ascending, limit to 3000 rows
     query = query.order_by(EspDailyData.date.asc()).limit(3000)
 
     result = await db.execute(query)
 
     if requested_cols:
-        # 매핑 방식으로 EspDataPoint 생성
+        # Build EspDataPoint using mapping approach
         rows = result.fetchall()
         data_points = []
         for row in rows:

@@ -1,15 +1,15 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import upload, wells
+from app.api import upload, wells, analysis
 
 app = FastAPI(
     title="ESP Performance Analysis System API",
     version="0.1.0",
-    description="Offshore ESP 성능 저하 감지 및 잔여 수명 예측 플랫폼",
+    description="Offshore ESP performance degradation detection and remaining useful life prediction platform",
 )
 
-# CORS 설정: 프론트엔드(localhost:3000) 접근 허용
+# CORS configuration: allow access from frontend (localhost:3000)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -18,12 +18,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API 라우터 등록
+# Register API routers
 app.include_router(upload.router, prefix="/api", tags=["upload"])
 app.include_router(wells.router, prefix="/api", tags=["wells"])
+app.include_router(analysis.router, prefix="/api", tags=["analysis"])
 
 
 @app.get("/health", tags=["health"])
 async def health_check():
-    """서버 상태 확인 엔드포인트"""
+    """Server health check endpoint"""
     return {"status": "ok"}

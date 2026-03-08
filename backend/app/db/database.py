@@ -3,16 +3,16 @@ from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import settings
 
-# 비동기 엔진 생성 (asyncpg 드라이버 사용)
+# Create async engine (uses asyncpg driver)
 async_engine = create_async_engine(
     settings.DATABASE_URL,
     pool_size=10,
     max_overflow=20,
-    # SQL 로그는 개발 시에만 활성화
+    # Enable SQL logging only during development
     echo=False,
 )
 
-# 세션 팩토리: expire_on_commit=False → 커밋 후에도 ORM 객체 접근 가능
+# Session factory: expire_on_commit=False → ORM objects remain accessible after commit
 AsyncSessionLocal = async_sessionmaker(
     async_engine,
     class_=AsyncSession,
@@ -21,11 +21,11 @@ AsyncSessionLocal = async_sessionmaker(
 
 
 class Base(DeclarativeBase):
-    """모든 SQLAlchemy ORM 모델의 공통 베이스 클래스"""
+    """Common base class for all SQLAlchemy ORM models"""
     pass
 
 
 async def get_db():
-    """FastAPI 의존성 주입용 DB 세션 생성기"""
+    """DB session generator for FastAPI dependency injection"""
     async with AsyncSessionLocal() as session:
         yield session

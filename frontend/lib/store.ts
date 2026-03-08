@@ -1,7 +1,8 @@
 /**
- * Zustand 클라이언트 상태 관리
- * - 4개 Plot의 독립적인 컬럼 선택 상태
- * - 날짜 범위 필터 (DateRangePicker ↔ Plotly X축 동기화)
+ * Zustand client state management
+ * - Independent column selection state for each of the 4 plots
+ * - Date range filter (DateRangePicker ↔ Plotly X-axis synchronization)
+ * - Active Celery task ID management
  */
 import { create } from "zustand";
 
@@ -25,26 +26,26 @@ export interface DateRange {
 }
 
 interface ChartStore {
-  /** 4개 Plot 각각의 선택 컬럼 상태 */
+  /** Selected column state for each of the 4 plots */
   plots: [PlotState, PlotState, PlotState, PlotState];
-  /** 날짜 범위 필터 (Plotly 줌과 DateRangePicker 양방향 동기화) */
+  /** Date range filter (bidirectional sync between Plotly zoom and DateRangePicker) */
   dateRange: DateRange;
 
-  /** 특정 Plot의 선택 컬럼 전체 교체 */
+  /** Replace all selected columns for a specific plot */
   setPlotColumns: (plotIndex: 0 | 1 | 2 | 3, columns: ColumnKey[]) => void;
-  /** 특정 Plot에서 단일 컬럼 토글 (최소 1개 유지) */
+  /** Toggle a single column in a specific plot (minimum 1 column maintained) */
   togglePlotColumn: (plotIndex: 0 | 1 | 2 | 3, column: ColumnKey) => void;
-  /** 날짜 범위 설정 */
+  /** Set the date range */
   setDateRange: (start: string | null, end: string | null) => void;
 }
 
 export const useChartStore = create<ChartStore>((set) => ({
-  // 4개 Plot 기본 컬럼 설정
+  // Default column configuration for each of the 4 plots
   plots: [
-    { selectedColumns: ["vfd_freq", "choke"] },          // Plot 1: 제어계통
-    { selectedColumns: ["motor_current", "motor_temp"] }, // Plot 2: 전기계통
-    { selectedColumns: ["pi", "pd"] },                    // Plot 3: 압력계통
-    { selectedColumns: ["motor_vib", "water_cut"] },      // Plot 4: 진동/생산
+    { selectedColumns: ["vfd_freq", "choke"] },          // Plot 1: Control system
+    { selectedColumns: ["motor_current", "motor_temp"] }, // Plot 2: Electrical system
+    { selectedColumns: ["pi", "pd"] },                    // Plot 3: Pressure system
+    { selectedColumns: ["motor_vib", "water_cut"] },      // Plot 4: Vibration/Production
   ],
   dateRange: { start: null, end: null },
 
@@ -61,7 +62,7 @@ export const useChartStore = create<ChartStore>((set) => ({
       const current = newPlots[plotIndex].selectedColumns;
       const isSelected = current.includes(column);
 
-      // 최소 1개 선택 유지
+      // Maintain minimum 1 selected column
       if (isSelected && current.length === 1) return state;
 
       newPlots[plotIndex] = {
@@ -73,4 +74,47 @@ export const useChartStore = create<ChartStore>((set) => ({
     }),
 
   setDateRange: (start, end) => set({ dateRange: { start, end } }),
+}));
+
+// ============================================================
+// Analysis task state store
+// ============================================================
+
+/**
+ * Store for managing Celery async task IDs.
+ * Stores the active task_id for each (wellId, step) combination so that
+ * polling state is preserved across page navigation.
+ */
+interface AnalysisStore {
+  /** Key: '{wellId}_step{N}', Value: Celery task_id */
+  activeTaskIds: Record<string, string>;
+
+  /** Save task_id for a specific well's step */
+  setTaskId: (wellId: string, step: number, taskId: string) => void;
+  /** Remove task_id for a specific well's step (on completion or cancellation) */
+  clearTaskId: (wellId: string, step: number) => void;
+  /** Retrieve task_id for a specific well's step */
+  getTaskId: (wellId: string, step: number) => string | undefined;
+}
+
+export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
+  activeTaskIds: {},
+
+  setTaskId: (wellId, step, taskId) =>
+    set((state) => ({
+      activeTaskIds: {
+        ...state.activeTaskIds,
+        [`${wellId}_step${step}`]: taskId,
+      },
+    })),
+
+  clearTaskId: (wellId, step) =>
+    set((state) => {
+      const next = { ...state.activeTaskIds };
+      delete next[`${wellId}_step${step}`];
+      return { activeTaskIds: next };
+    }),
+
+  getTaskId: (wellId, step) =>
+    get().activeTaskIds[`${wellId}_step${step}`],
 }));

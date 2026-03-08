@@ -1,0 +1,32 @@
+"use client";
+
+/**
+ * Step 1 error UI
+ * error.tsx requires the 'use client' directive (Next.js rule).
+ */
+
+import { AlertTriangle, RefreshCw } from "lucide-react";
+import { Button } from "@/components/ui/button";
+
+interface ErrorProps {
+  error: Error & { digest?: string };
+  reset: () => void;
+}
+
+export default function Step1Error({ error, reset }: ErrorProps) {
+  return (
+    <div className="flex flex-col items-center justify-center min-h-64 gap-4 text-center p-8">
+      <div className="p-4 rounded-full bg-destructive/10">
+        <AlertTriangle className="h-8 w-8 text-destructive" />
+      </div>
+      <div className="space-y-1">
+        <p className="text-sm font-medium">An error occurred during Step 1 analysis</p>
+        <p className="text-xs text-muted-foreground">{error.message}</p>
+      </div>
+      <Button variant="outline" size="sm" onClick={reset} className="gap-1.5">
+        <RefreshCw className="h-3.5 w-3.5" />
+        Try Again
+      </Button>
+    </div>
+  );
+}

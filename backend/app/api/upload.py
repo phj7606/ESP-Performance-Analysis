@@ -1,6 +1,6 @@
 """
-Excel 파일 업로드 API.
-파일 검증 → Excel 파싱 → Well upsert → esp_daily_data bulk upsert
+Excel file upload API.
+File validation -> Excel parsing -> Well upsert -> esp_daily_data bulk upsert
 """
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import func, select
@@ -24,34 +24,34 @@ async def upload_file(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Excel 파일 업로드 및 DB 적재.
-    멱등성 보장: 동일 Well의 동일 날짜 재업로드 시 덮어쓰기 (ON CONFLICT DO UPDATE).
+    Upload Excel file and load into DB.
+    Idempotent: re-uploading the same Well on the same date overwrites existing data (ON CONFLICT DO UPDATE).
     """
-    # 1. 파일 형식 검증
+    # 1. Validate file format
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xls")):
-        raise HTTPException(status_code=400, detail="Excel 파일(.xlsx, .xls)만 업로드 가능합니다.")
+        raise HTTPException(status_code=400, detail="Only Excel files (.xlsx, .xls) are allowed.")
 
-    # 2. 파일 크기 검증
+    # 2. Validate file size
     content = await file.read()
     if len(content) > settings.MAX_UPLOAD_SIZE:
         raise HTTPException(
             status_code=413,
-            detail=f"파일 크기 초과 (최대 {settings.MAX_UPLOAD_SIZE // 1024 // 1024}MB)",
+            detail=f"File size exceeds limit (max {settings.MAX_UPLOAD_SIZE // 1024 // 1024}MB)",
         )
 
-    # 3. Excel 파싱
+    # 3. Parse Excel
     try:
         well_name, df, warnings = parse_excel(content)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Excel 파싱 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Excel parsing failed: {str(e)}")
 
     if df.empty:
-        raise HTTPException(status_code=422, detail="유효한 데이터 행이 없습니다.")
+        raise HTTPException(status_code=422, detail="No valid data rows found.")
 
     async with db.begin():
-        # 4. Well upsert: 동일 이름 Well이 있으면 업데이트, 없으면 생성
+        # 4. Well upsert: update if a Well with the same name exists, otherwise create
         well_stmt = (
             pg_insert(Well)
             .values(name=well_name, analysis_status="data_ready")
@@ -68,10 +68,10 @@ async def upload_file(
         well_id = result.scalar_one()
 
         # 5. esp_daily_data bulk upsert
-        # 한 번의 INSERT ... ON CONFLICT 쿼리로 464행 처리 (루프 대비 ~10배 빠름)
+        # Process 464 rows with a single INSERT ... ON CONFLICT query (~10x faster than looping)
         records = dataframe_to_records(df, str(well_id))
 
-        # DB에 존재하는 컬럼만 포함 (매핑되지 않은 컬럼 필터링)
+        # Include only columns that exist in the DB (filter out unmapped columns)
         valid_cols = set(MEASUREMENT_COLUMNS + ["date", "well_id"])
         filtered_records = [
             {k: v for k, v in r.items() if k in valid_cols}
@@ -79,7 +79,7 @@ async def upload_file(
         ]
 
         esp_stmt = pg_insert(EspDailyData).values(filtered_records)
-        # 충돌(동일 well_id + date) 시 측정값 업데이트
+        # On conflict (same well_id + date), update measurement values
         update_set = {
             col: esp_stmt.excluded[col]
             for col in MEASUREMENT_COLUMNS
@@ -91,7 +91,7 @@ async def upload_file(
         )
         await db.execute(esp_stmt)
 
-    # 날짜 범위 계산
+    # Calculate date range
     dates = [r["date"] for r in filtered_records if r.get("date")]
     date_range = (
         {"start": str(min(dates)), "end": str(max(dates))} if dates else None
@@ -104,5 +104,5 @@ async def upload_file(
         date_range=date_range,
         columns_found=list(df.columns),
         warnings=warnings,
-        message=f"'{well_name}' Well 데이터 {len(df)}행 적재 완료",
+        message=f"Successfully loaded {len(df)} rows for Well '{well_name}'",
     )

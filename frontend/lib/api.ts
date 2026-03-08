@@ -1,6 +1,6 @@
 /**
  * API 클라이언트 모듈
- * Next.js rewrites를 통해 /api/* → 백엔드로 프록시됨
+ * /api/* 요청은 Next.js rewrites를 통해 백엔드로 프록시됨
  */
 
 export interface WellResponse {
@@ -73,7 +73,14 @@ export interface UploadResponse {
   message: string;
 }
 
-const BASE_URL = "/api";
+/**
+ * 서버 컴포넌트(SSR)는 Next.js rewrite 미들웨어를 거치지 않으므로
+ * 백엔드를 직접 호출해야 함. 클라이언트는 /api 상대경로 사용.
+ */
+const BASE_URL =
+  typeof window === "undefined"
+    ? `${process.env.BACKEND_INTERNAL_URL ?? "http://backend:8000"}/api`
+    : "/api";
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, options);
@@ -89,7 +96,7 @@ export async function getWells(): Promise<WellListResponse> {
   return fetchJson(`${BASE_URL}/wells`);
 }
 
-/** Well 상세 정보 조회 */
+/** 단일 Well 상세 조회 */
 export async function getWell(wellId: string): Promise<WellResponse> {
   return fetchJson(`${BASE_URL}/wells/${wellId}`);
 }
@@ -110,6 +117,218 @@ export async function getWellData(
 
   const query = searchParams.toString();
   return fetchJson(`${BASE_URL}/wells/${wellId}/data${query ? `?${query}` : ""}`);
+}
+
+// ============================================================
+// 분석 API 타입 정의
+// ============================================================
+
+/** Celery 비동기 태스크 상태 응답 */
+export interface TaskStatusResponse {
+  task_id: string;
+  /** PENDING: 대기, STARTED: 실행 중, SUCCESS: 완료, FAILURE: 실패 */
+  status: "PENDING" | "STARTED" | "SUCCESS" | "FAILURE";
+  result: unknown | null;
+  error: string | null;
+}
+
+/** Step 1 무차원 성능 지수 시계열 한 점 */
+export interface Step1IndexPoint {
+  date: string;
+  /** 전력 지수: motor_power / (sg × f³) */
+  cp: number | null;
+  /** 헤드 지수: (pd-pi) / (sg × f²) */
+  psi: number | null;
+  /** 진동 지수: motor_vib / f² */
+  v_std: number | null;
+  /** 냉각 지수: (motor_temp-ti) / motor_power */
+  t_eff: number | null;
+  /** Efficiency Proxy: (ΔP − C×WHP) × f / motor_power [psi·Hz/kW] — WHP-corrected */
+  eta_proxy: number | null;
+  /** 펌프 부하 지수: power / (ΔP × liquid_rate) — liquid_rate 측정 시에만 존재 */
+  pump_load_index: number | null;
+  cp_ma30: number | null;
+  psi_ma30: number | null;
+  v_std_ma30: number | null;
+  t_eff_ma30: number | null;
+  eta_proxy_ma30: number | null;
+  pump_load_index_ma30: number | null;
+  /** Step 2 완료 후 학습 구간 여부 (Step 1 단계에선 모두 false) */
+  is_training: boolean;
+}
+
+/** Step 1 분석 결과: 4개 무차원 성능 지수 전체 기간 시계열 */
+export interface Step1Response {
+  well_id: string;
+  sg_oil: number;
+  sg_water: number;
+  data_start: string | null;
+  data_end: string | null;
+  /** WHP 보정 회귀 기울기 C — ψ_corrected = (ΔP - C×WHP) / (sg×f²) */
+  psi_whp_coeff: number | null;
+  /** WHP 보정 회귀 절편 */
+  psi_whp_intercept: number | null;
+  /** WHP 보정 회귀 결정계수 R² */
+  psi_whp_r2: number | null;
+  /** WHP 회귀에 사용된 유효 데이터 수 */
+  psi_whp_n_samples: number | null;
+  indices: Step1IndexPoint[];
+}
+
+/** Step 2 건강 점수 시계열 한 점 */
+export interface Step2HealthPoint {
+  date: string;
+  mahalanobis_distance: number | null;
+  health_score: number | null;           // 0(위험) ~ 100(정상)
+  health_status: string | null;          // Normal / Degrading / Critical
+  is_training: boolean;                  // CV 학습 구간 여부
+  // 피처 기여도: 점수 하락 원인의 비율 (합 = 1.0, 점수 낮을 때 의미 있음)
+  contribution_eta:   number | null;     // Efficiency (η_proxy) 기여도 (0~1)
+  contribution_v_std: number | null;     // Vibration (v_std) 기여도 (0~1)
+  contribution_t_eff: number | null;     // Cooling (t_eff) 기여도 (0~1)
+}
+
+/** Step 2 분석 결과: 건강 점수 시계열 + 학습 구간 정보 */
+export interface Step2Response {
+  well_id: string;
+  training_start: string | null;
+  training_end: string | null;
+  features_used: string[];
+  k_factor: number | null;
+  scores: Step2HealthPoint[];
+}
+
+/** Step 2-B Trend-Residual 건강 점수 시계열 한 점 */
+export interface Step2bScorePoint {
+  date: string;
+  health_score: number | null;     // 10(하한) ~ 100(정상)
+  health_status: string | null;    // Normal / Degrading / Critical
+  // 피처별 개별 점수 (Radar 차트: 고장 원인 판별)
+  score_eta:   number | null;      // η_proxy 점수 (효율 지수)
+  score_v_std: number | null;      // v_std 점수 (진동 지수)
+  score_t_eff: number | null;      // t_eff 점수 (냉각 지수)
+}
+
+/** Step 2-B 분석 결과: Trend-Residual 건강 점수 시계열 */
+export interface Step2bResponse {
+  well_id: string;
+  rows_written: number;
+  scores: Step2bScorePoint[];
+}
+
+/** Pillar 1/2 공통 알람 응답 (Mann-Kendall 추세 기반) */
+export interface PillarAlarm {
+  /** normal / warning / critical / unknown */
+  status: string | null;
+  /** Mann-Kendall tau (P1: 음수=하락, P2: 양수=상승) */
+  tau: number | null;
+  pvalue: number | null;
+  /** 최근 지표 값 */
+  current_val: number | null;
+  /** 베이스라인 평균 */
+  baseline_val: number | null;
+  /** CRITICAL 임계치 절대값 */
+  threshold: number | null;
+}
+
+/** Pillar 3 알람 응답 (current_leak 절대값 + 3일 지속 조건) */
+export interface Pillar3Alarm {
+  /** normal / warning / critical / unknown */
+  status: string | null;
+  /** 최근 이동 중앙값 (μA) */
+  current_val: number | null;
+  /** 임계치 초과 연속 일수 */
+  days_exceeded: number | null;
+  data_available: boolean;
+}
+
+/** Step 3 분석 결과: 3-Pillar 독립 고장 모드 알람 */
+export interface Step3Response {
+  well_id: string;
+  computed_at: string | null;
+  pillar1: PillarAlarm;   // Hydraulic: ψ 하락 추세
+  pillar2: PillarAlarm;   // Mechanical: v_std 상승 추세
+  pillar3: Pillar3Alarm;  // Electrical: current_leak 절대값
+}
+
+// ============================================================
+// 분석 API 함수
+// ============================================================
+
+/** Celery 태스크 상태 조회 */
+export async function getTaskStatus(
+  taskId: string
+): Promise<TaskStatusResponse> {
+  return fetchJson(`${BASE_URL}/tasks/${taskId}`);
+}
+
+/** Step 1 실행: 성능 진단 (전체 기간 무차원 지수 계산) */
+export async function runStep1(
+  wellId: string,
+  params?: { sg_oil?: number; sg_water?: number }
+): Promise<{ task_id: string }> {
+  return fetchJson(`${BASE_URL}/wells/${wellId}/analysis/step1`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params ?? {}),
+  });
+}
+
+/** Step 1 결과 조회 */
+export async function getStep1Result(wellId: string): Promise<Step1Response> {
+  return fetchJson(`${BASE_URL}/wells/${wellId}/analysis/step1`);
+}
+
+/** Step 2 실행: 건강 점수 산출 (CV 탐지 + GMM + Mahalanobis) */
+export async function runStep2(
+  wellId: string,
+): Promise<{ task_id: string }> {
+  return fetchJson(`${BASE_URL}/wells/${wellId}/analysis/step2`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+}
+
+/**
+ * Step 2 결과 조회 — 이제 Trend-Residual 데이터 반환 (Step 2/2b 스왑 후)
+ * GET /step2 → trend_residual_scores 테이블 → Step2bResponse 형식
+ */
+export async function getStep2Result(wellId: string): Promise<Step2bResponse> {
+  return fetchJson(`${BASE_URL}/wells/${wellId}/analysis/step2`);
+}
+
+/** Step 2-B 실행: GMM Health Scoring (보조 분석으로 전환) */
+export async function runStep2b(wellId: string): Promise<{ task_id: string }> {
+  return fetchJson(`${BASE_URL}/wells/${wellId}/analysis/step2b`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+}
+
+/**
+ * Step 2-B 결과 조회 — 이제 GMM 데이터 반환 (Step 2/2b 스왑 후)
+ * GET /step2b → health_scores 테이블 → Step2Response 형식
+ */
+export async function getStep2bResult(wellId: string): Promise<Step2Response> {
+  return fetchJson(`${BASE_URL}/wells/${wellId}/analysis/step2b`);
+}
+
+/** Step 3 실행: 3-Pillar 고장 모드 알람 분석 */
+export async function runStep3(
+  wellId: string,
+): Promise<{ task_id: string }> {
+  return fetchJson(`${BASE_URL}/wells/${wellId}/analysis/step3`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+}
+
+/** Step 3 결과 조회 */
+export async function getStep3Result(wellId: string): Promise<Step3Response> {
+  return fetchJson(`${BASE_URL}/wells/${wellId}/analysis/step3`);
 }
 
 /** Excel 파일 업로드 */
@@ -135,7 +354,7 @@ export async function uploadFile(
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve(JSON.parse(xhr.responseText));
       } else {
-        // 백엔드가 HTML/텍스트를 반환하는 경우 (500, 502 등) JSON.parse 실패 방지
+        // 백엔드가 HTML/text를 반환할 때(500, 502 등) JSON.parse 실패 방지
         let errorMessage = `HTTP ${xhr.status}`;
         try {
           const error = JSON.parse(xhr.responseText || "{}");
@@ -147,7 +366,7 @@ export async function uploadFile(
       }
     });
 
-    xhr.addEventListener("error", () => reject(new Error("네트워크 오류")));
+    xhr.addEventListener("error", () => reject(new Error("Network error")));
     xhr.send(formData);
   });
 }

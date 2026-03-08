@@ -16,9 +16,10 @@ interface PlotColumnSelectorProps {
 }
 
 /**
- * 개별 Plot의 컬럼 선택 드롭다운.
- * 그룹별로 컬럼을 나열하고, 색상 인디케이터로 차트 선 색상을 미리 표시.
- * 최소 1개 선택 강제 (마지막 체크 해제 불가).
+ * Column selection dropdown for an individual plot.
+ * Lists columns grouped by category and shows a color indicator
+ * to preview the chart line color.
+ * Enforces a minimum of 1 selected column (cannot deselect the last one).
  */
 export function PlotColumnSelector({ plotIndex }: PlotColumnSelectorProps) {
   const { plots, togglePlotColumn } = useChartStore();
@@ -27,32 +28,32 @@ export function PlotColumnSelector({ plotIndex }: PlotColumnSelectorProps) {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        {/* ⚙ 아이콘 버튼 - Plot 헤더 우측 */}
-        <Button variant="ghost" size="icon" className="h-6 w-6" title="변수 선택">
+        {/* Settings icon button – positioned on the right side of the plot header */}
+        <Button variant="ghost" size="icon" className="h-6 w-6" title="Select Variables">
           <Settings2 className="h-3 w-3" />
         </Button>
       </PopoverTrigger>
 
-      {/* 컬럼 선택 드롭다운 패널 */}
+      {/* Column selection dropdown panel */}
       <PopoverContent className="w-72 p-2" align="end">
         <p className="text-xs font-semibold text-muted-foreground mb-2 px-1">
-          표시할 변수 선택 (최대 2개 권장)
+          Select variables to display (max 2 recommended)
         </p>
 
         <div className="space-y-3 max-h-80 overflow-y-auto">
           {Object.entries(COLUMN_GROUPS).map(([group, columns]) => (
             <div key={group}>
-              {/* 그룹 헤더 */}
+              {/* Group header */}
               <div className="text-xs font-medium text-muted-foreground border-b pb-1 mb-1 px-1">
                 {group}
               </div>
 
-              {/* 그룹 내 컬럼 목록 */}
+              {/* Column list within the group */}
               <div className="space-y-1">
                 {columns.map((colKey: ColumnKey) => {
                   const meta = COLUMN_CONFIG[colKey];
                   const isChecked = selectedColumns.includes(colKey);
-                  // 마지막 선택된 항목은 체크 해제 불가
+                  // The last selected item cannot be deselected
                   const isDisabled = isChecked && selectedColumns.length === 1;
 
                   return (
@@ -62,7 +63,7 @@ export function PlotColumnSelector({ plotIndex }: PlotColumnSelectorProps) {
                         isDisabled ? "opacity-50 cursor-not-allowed" : ""
                       }`}
                     >
-                      {/* 차트 선 색상 인디케이터 */}
+                      {/* Chart line color indicator */}
                       <div
                         className="w-2.5 h-2.5 rounded-full flex-shrink-0"
                         style={{ backgroundColor: meta.color }}

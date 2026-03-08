@@ -10,9 +10,9 @@ interface UseWellDataParams {
 }
 
 /**
- * Well 시계열 데이터 조회 훅.
- * 날짜 범위가 변경되어도 이전 데이터를 유지 (placeholderData)하여
- * 로딩 중 차트 깜빡임 방지.
+ * Hook for fetching well time-series data.
+ * Retains previous data when the date range changes (placeholderData) to
+ * prevent chart flickering during loading.
  */
 export function useWellData({ wellId, startDate, endDate }: UseWellDataParams) {
   return useQuery({
@@ -24,7 +24,7 @@ export function useWellData({ wellId, startDate, endDate }: UseWellDataParams) {
       }),
     enabled: !!wellId,
     staleTime: 30_000,
-    // 날짜 범위 변경 시 이전 데이터 유지 (깜빡임 방지)
+    // Retain previous data on date range change (prevents flickering)
     placeholderData: (prev) => prev,
   });
 }

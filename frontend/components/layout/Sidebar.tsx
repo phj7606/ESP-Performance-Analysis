@@ -1,31 +1,41 @@
 "use client";
 
+/**
+ * Left sidebar navigation
+ *
+ * Icon-based narrow sidebar (w-14).
+ * Highlights the active link based on the current route.
+ *
+ * Navigation items:
+ * - Dashboard (Well list)
+ * - Data Upload
+ * - Step 4 Comprehensive Analysis (run after all wells are complete)
+ */
+
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Activity, Upload, Home } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
-  { href: "/", icon: Home, label: "대시보드" },
-  { href: "/upload", icon: Upload, label: "데이터 업로드" },
+  { href: "/", icon: Home, label: "Dashboard" },
+  { href: "/upload", icon: Upload, label: "Data Upload" },
 ];
 
-/**
- * 좌측 사이드바 네비게이션.
- * 현재 경로에 따라 활성 링크 강조 표시.
- */
 export function Sidebar() {
   const pathname = usePathname();
 
   return (
     <aside className="w-14 flex-shrink-0 bg-card border-r flex flex-col items-center py-4 gap-2">
-      {/* 로고 */}
+      {/* Logo */}
       <div className="mb-4">
         <Activity className="h-6 w-6 text-primary" />
       </div>
 
-      {/* 네비게이션 링크 */}
+      {/* Navigation links */}
       {navItems.map(({ href, icon: Icon, label }) => {
+        // Dashboard activates only for the exact "/" path (excludes wells/, upload/, etc.)
+        // Other items use startsWith to include sub-routes
         const isActive =
           href === "/" ? pathname === "/" : pathname.startsWith(href);
 

@@ -18,7 +18,8 @@ class Well(Base):
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     field: Mapped[Optional[str]] = mapped_column(String(100))
     latest_health_score: Mapped[Optional[float]] = mapped_column(Float)
-    # 분석 워크플로우 상태 (no_data → data_ready → baseline_set → ... → fully_analyzed)
+    # 분석 워크플로우 상태 (순서 강제)
+    # no_data → data_ready → diagnosis_done → health_done → fully_analyzed
     analysis_status: Mapped[str] = mapped_column(
         String(50), nullable=False, default="no_data"
     )
@@ -27,11 +28,11 @@ class Well(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    # 관계 정의
+    # Relationship definitions
     esp_data: Mapped[list["EspDailyData"]] = relationship(
         "EspDailyData", back_populates="well", cascade="all, delete-orphan"
     )
 
 
-# 순환 임포트 방지를 위한 지연 임포트
+# Deferred import to prevent circular imports
 from app.models.esp_data import EspDailyData  # noqa: E402, F401

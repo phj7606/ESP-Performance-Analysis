@@ -3,12 +3,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { getWells } from "@/lib/api";
 
-/** Well 목록 조회 훅 (30초 자동갱신) */
+/** Hook for fetching the well list (auto-refreshes every 30 seconds) */
 export function useWells() {
   return useQuery({
     queryKey: ["wells"],
     queryFn: getWells,
-    // 30초마다 자동 폴링 (건강점수/상태 변경 실시간 반영)
+    // Poll every 30 seconds to reflect real-time health score and status changes
     refetchInterval: 30_000,
     staleTime: 10_000,
   });
