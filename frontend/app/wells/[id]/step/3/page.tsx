@@ -29,6 +29,10 @@ import { useStep1Result, useStep3Result } from "@/hooks/useAnalysis";
 import { useWellData } from "@/hooks/useWellData";
 import { isStepComplete } from "@/lib/workflow";
 import type { Step3Response, PillarAlarm, Pillar3Alarm, Step1IndexPoint, EspDataPoint } from "@/lib/api";
+// 챗봇 컴포넌트 및 프롬프트 빌더
+import { ChatbotTrigger } from "@/components/chatbot/ChatbotTrigger";
+import { ChatbotPanel } from "@/components/chatbot/ChatbotPanel";
+import { buildStep3SystemPrompt } from "@/lib/chatbot-prompts";
 
 // Plotly SSR disabled — Next.js Turbopack does not support window access during SSR
 const Plot = dynamic(() => import("react-plotly.js"), { ssr: false });
@@ -740,8 +744,25 @@ export default function Step3Page({ params }: Step3PageProps) {
   const indices = step1Data?.indices ?? [];
   const espData = wellData?.data ?? [];
 
+  // 전체 알람 상태 계산 — CRITICAL 시 ChatbotTrigger에 빨간 배지 표시
+  const overallAlarmStatus = result
+    ? (
+        [result.pillar1.status, result.pillar2.status, result.pillar3.status].includes("critical")
+          ? "CRITICAL"
+          : [result.pillar1.status, result.pillar2.status, result.pillar3.status].includes("warning")
+            ? "WARNING"
+            : "NORMAL"
+      )
+    : null;
+
+  // 분석 결과가 있을 때만 시스템 프롬프트 생성
+  const systemPrompt = result
+    ? buildStep3SystemPrompt({ wellName: well?.name ?? id, result })
+    : "";
+
   return (
-    <div className="p-4 space-y-4">
+    // step-result-area: html2canvas가 이 영역을 캡처해 vision 챗봇에 전달
+    <div id="step-result-area" className="p-4 space-y-4">
       <WorkflowGuard status={currentStatus} requiredStep={3} wellId={id}>
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -753,8 +774,25 @@ export default function Step3Page({ params }: Step3PageProps) {
               Directly assesses &quot;Is this indicator at risk now?&quot; without predicting a failure date.
             </p>
           </div>
-          <AnalysisRunButton wellId={id} step={3} />
+          {/* 우측: 실행 버튼 + AI 질문 버튼 (CRITICAL 알람 배지 포함) */}
+          <div className="flex items-center gap-2 shrink-0">
+            <AnalysisRunButton wellId={id} step={3} />
+            <ChatbotTrigger
+              disabled={!result}
+              alarmStatus={overallAlarmStatus}
+            />
+          </div>
         </div>
+
+        {/* 챗봇 패널 (Sheet) */}
+        {result && (
+          <ChatbotPanel
+            stepNumber={3}
+            wellId={id}
+            systemPrompt={systemPrompt}
+            initialMessage="3-Pillar 알람 분석 결과를 요약하고 각 고장 모드별 심각도와 권고 조치를 알려주세요."
+          />
+        )}
 
         {/* Loading skeleton */}
         {(resultLoading || step1Loading) && stepComplete && (

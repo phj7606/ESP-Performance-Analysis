@@ -36,6 +36,10 @@ import { useTaskPolling } from "@/hooks/useTaskPolling";
 import { useAnalysisStore } from "@/lib/store";
 import { isStepComplete } from "@/lib/workflow";
 import type { Step1Response } from "@/lib/api";
+// 챗봇 컴포넌트 및 프롬프트 빌더
+import { ChatbotTrigger } from "@/components/chatbot/ChatbotTrigger";
+import { ChatbotPanel } from "@/components/chatbot/ChatbotPanel";
+import { buildStep1SystemPrompt } from "@/lib/chatbot-prompts";
 
 // Plotly SSR 비활성화 (Next.js 서버에서 window 객체 없음)
 const Plot = dynamic(() => import("react-plotly.js"), { ssr: false });
@@ -522,12 +526,18 @@ export default function Step1Page({ params }: Step1PageProps) {
   const stepComplete = isStepComplete(currentStatus, 1);
   const { data: result, isLoading: resultLoading } = useStep1Result(id, stepComplete);
 
+  // 분석 결과가 있을 때만 시스템 프롬프트 생성 (result가 없으면 빈 문자열)
+  const systemPrompt = result
+    ? buildStep1SystemPrompt({ wellName: well?.name ?? id, result })
+    : "";
+
   return (
-    <div className="p-4 space-y-4">
+    // step-result-area: html2canvas가 이 영역을 캡처해 vision 챗봇에 전달
+    <div id="step-result-area" className="p-4 space-y-4">
       {/* 워크플로우 가드: data_ready 이상이어야 Step 1 실행 가능 */}
       <WorkflowGuard status={currentStatus} requiredStep={1} wellId={id}>
 
-        {/* 헤더: 제목 + 실행 버튼 */}
+        {/* 헤더: 제목 + 실행 버튼 + AI 질문 버튼 */}
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="text-sm font-semibold">
@@ -539,9 +549,23 @@ export default function Step1Page({ params }: Step1PageProps) {
               (ψ_corr = (ΔP − C×WHP) / (sg×f²)) to isolate pump degradation from surface pressure changes.
             </p>
           </div>
-          {/* sg 파라미터를 포함하는 전용 실행 버튼 */}
-          <Step1RunButton wellId={id} sgOil={sgOil} sgWater={sgWater} />
+          {/* 우측: 실행 버튼 + AI 질문 버튼 */}
+          <div className="flex items-center gap-2 shrink-0">
+            <Step1RunButton wellId={id} sgOil={sgOil} sgWater={sgWater} />
+            {/* 분석 결과 없을 때 비활성화 */}
+            <ChatbotTrigger disabled={!result} />
+          </div>
         </div>
+
+        {/* 챗봇 패널 (Sheet) — 항상 DOM에 존재하며 isPanelOpen으로 표시/숨김 */}
+        {result && (
+          <ChatbotPanel
+            stepNumber={1}
+            wellId={id}
+            systemPrompt={systemPrompt}
+            initialMessage="Step 1 분석 결과를 요약하고 주목할 지수 변화가 있으면 알려주세요."
+          />
+        )}
 
         {/* 유체 비중 파라미터 입력 */}
         <Card>

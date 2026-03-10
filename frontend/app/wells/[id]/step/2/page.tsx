@@ -29,6 +29,10 @@ import { useWell } from "@/hooks/useWell";
 import { useStep2Result } from "@/hooks/useAnalysis";
 import { isStepComplete } from "@/lib/workflow";
 import type { Step2bResponse, Step2bScorePoint } from "@/lib/api";
+// 챗봇 컴포넌트 및 프롬프트 빌더
+import { ChatbotTrigger } from "@/components/chatbot/ChatbotTrigger";
+import { ChatbotPanel } from "@/components/chatbot/ChatbotPanel";
+import { buildStep2SystemPrompt } from "@/lib/chatbot-prompts";
 
 // Disable Plotly SSR (prevents window object access errors in Next.js Turbopack)
 const Plot = dynamic(() => import("react-plotly.js"), { ssr: false });
@@ -417,12 +421,23 @@ export default function Step2Page({ params }: Step2PageProps) {
   const stepComplete = isStepComplete(currentStatus, 2);
   const { data: result, isLoading: resultLoading } = useStep2Result(id, stepComplete);
 
+  // 분석 결과가 있을 때만 시스템 프롬프트 생성
+  const systemPrompt = result
+    ? buildStep2SystemPrompt({ wellName: well?.name ?? id, result })
+    : "";
+
+  // 최신 건강 상태 — CRITICAL이면 ChatbotTrigger에 배지 표시
+  const latestStatus = result
+    ? ([...result.scores].reverse().find((s) => s.health_status != null)?.health_status ?? null)
+    : null;
+
   return (
-    <div className="p-4 space-y-4">
+    // step-result-area: html2canvas가 이 영역을 캡처해 vision 챗봇에 전달
+    <div id="step-result-area" className="p-4 space-y-4">
       {/* Workflow guard: requires diagnosis_done to run Step 2 */}
       <WorkflowGuard status={currentStatus} requiredStep={2} wellId={id}>
 
-        {/* Header: title + run button */}
+        {/* Header: title + run button + AI 질문 버튼 */}
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="text-sm font-semibold">
@@ -433,9 +448,26 @@ export default function Step2Page({ params }: Step2PageProps) {
               Health score 10–100. Radar chart for root cause identification.
             </p>
           </div>
-          {/* Standard run button — uses normal workflow state transition */}
-          <AnalysisRunButton wellId={id} step={2} />
+          {/* 우측: 실행 버튼 + AI 질문 버튼 */}
+          <div className="flex items-center gap-2 shrink-0">
+            <AnalysisRunButton wellId={id} step={2} />
+            {/* Critical 상태면 빨간 배지 표시 */}
+            <ChatbotTrigger
+              disabled={!result}
+              alarmStatus={latestStatus}
+            />
+          </div>
         </div>
+
+        {/* 챗봇 패널 (Sheet) */}
+        {result && (
+          <ChatbotPanel
+            stepNumber={2}
+            wellId={id}
+            systemPrompt={systemPrompt}
+            initialMessage="Step 2 건강 점수 분석 결과를 요약하고 현재 ESP 상태를 평가해주세요."
+          />
+        )}
 
         {/* Loading skeleton */}
         {resultLoading && stepComplete && (

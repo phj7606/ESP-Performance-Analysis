@@ -1,6 +1,6 @@
 # ESP-PAS (ESP Performance Analysis System) 개발 로드맵
 
-> **버전**: 4.0.0 | **최종 업데이트**: 2026-03-08 | **기준 PRD**: v2.0.0
+> **버전**: 4.1.0 | **최종 업데이트**: 2026-03-10 | **기준 PRD**: v2.0.0
 > **전체 개발 기간**: 7일 (2026-03-03 ~ 2026-03-09)
 
 ---
@@ -499,7 +499,7 @@ Offshore ESP(Electric Submersible Pump)의 성능 저하를 자동 감지하고 
 
 ---
 
-### ⬜ Phase 8: Export & QA (Integration & Quality Assurance)
+### 🔄 Phase 8: Export & QA (Integration & Quality Assurance)
 
 **목표**: CSV Export(F-009) 구현, 전체 워크플로우 E2E 통합 테스트, PRD 비기능 요구사항 검증, 버그 수정 및 코드 정리.
 
@@ -510,6 +510,15 @@ Offshore ESP(Electric Submersible Pump)의 성능 저하를 자동 감지하고 
 - 개발 환경 설정 문서 (`docs/SETUP.md`)
 
 #### 태스크
+
+- [x] **[LLM-1] Step 1/2/3 LLM 챗봇 Q&A 사이드바 구현** `Frontend` ~120분
+  - `frontend/lib/chatbot-store.ts`: Zustand 스토어 (API 키 localStorage 영속화, 패널 상태, 대화 히스토리, 스트리밍 delta 누적)
+  - `frontend/lib/chatbot-prompts.ts`: Step 1/2/3 시스템 프롬프트 빌더 (무차원 지수 추세, 건강 점수, 3-Pillar 알람 컨텍스트)
+  - `frontend/components/chatbot/`: ApiKeyInput, MessageList, ChatInput, ChatbotTrigger, ChatbotPanel (5개 컴포넌트)
+  - OpenAI SDK (`openai` npm) 브라우저 직접 호출 (`dangerouslyAllowBrowser: true`), 스트리밍 SSE 출력
+  - `react-markdown`으로 어시스턴트 응답 마크다운 렌더링
+  - Step 1/2/3 페이지에 `<ChatbotTrigger>` 버튼 + `<ChatbotPanel>` 통합
+  - 패널 열림 시 분석 결과 컨텍스트 기반 자동 초기 요약 전송
 
 - [ ] **[EXPORT-1] CSV Export API 구현** `Backend` ~45분
   - 파일 위치: `backend/app/api/export.py`
@@ -585,7 +594,7 @@ Offshore ESP(Electric Submersible Pump)의 성능 저하를 자동 감지하고 
 | M4: Step 1 완성 | Phase 4 완료 | 4개 무차원 지수 전체 기간 계산 + MA30 저장 + 2×2 서브플롯 차트 | ✅ 완료 |
 | M5: Step 2 완성 | Phase 5 완료 | CV 자동 학습 구간 탐지 + GMM + 건강 점수 시계열 차트 | ✅ 완료 |
 | M6: Step 3 완성 | Phase 6 완료 | 3-Pillar 알람 (P1 Hydraulic/P2 Mechanical/P3 Electrical) + 시계열 차트 | ✅ 완료 |
-| M7: MVP 완성 | Phase 8 완료 | E2E 워크플로우 + CSV Export + QA 통과 | ⬜ 미시작 |
+| M7: MVP 완성 | Phase 8 완료 | E2E 워크플로우 + CSV Export + QA 통과 | 🔄 진행 중 (LLM 챗봇 + Vision 업그레이드 완료, Export/QA 미완료) |
 
 ---
 
@@ -636,7 +645,7 @@ graph TD
 
 ## 진행 추적
 
-### 전체 태스크 수: 43개
+### 전체 태스크 수: 44개
 
 | Phase | 태스크 수 | 완료 | 미완료 | 담당 영역 |
 |-------|----------|------|--------|----------|
@@ -647,10 +656,10 @@ graph TD
 | Phase 5 (ML Step 2) | 3개 | 3개 | 0개 | Backend / ML / Frontend |
 | Phase 6 (ML Step 3 Prophet) | 3개 | 3개 | 0개 | Backend / ML / Frontend |
 | ~~Phase 7 (ML Step 4)~~ | ~~4개~~ | — | — | 제거됨 (Phase 5에 통합) |
-| Phase 8 (Export & QA) | 9개 | 0개 | 9개 | 전체 |
-| **합계** | **43개** | **34개** | **9개** | |
+| Phase 8 (Export & QA) | 10개 | 1개 | 9개 | 전체 |
+| **합계** | **44개** | **35개** | **9개** | |
 
-### 완료율: 79% (34/43 태스크)
+### 완료율: 80% (35/44 태스크)
 
 ### Day별 진행 이력
 | 날짜 | 완료 항목 | 비고 |
@@ -666,6 +675,8 @@ graph TD
 | 2026-03-08 (Day 5) | **Phase 5 Step 2 건강 점수 알고리즘 최적화** — Piecewise 백분위 기준 하향(p50/p10 → p20/p2), reg_covar 0.01→0.05, max_window 90→60일 | Tight Training Distribution 문제 해결 (안정 구간 낮은 점수 방지), Step 1 버그 수정 2건(liquid_rate KeyError, np.isfinite object dtype), 전체 테스트 27/27 통과 |
 | 2026-03-08 (Day 6) | **Step 2 ↔ Step 2-B 역할 스왑 + 영어 UI 전환** — Trend-Residual → 기본 Step 2 (health_done 설정, latest_health_score 소스), GMM → Step 2-B 보조 (diagnosis_done 이후 독립 실행 가능) | ml-data-analyst 2차 검토 감점 구조 확정(P_RES_MAX=40, P_SLOPE_MAX=60, SCORE_FLOOR=10, v_std z_coeff=12, t_eff slope_coeff=25), 모든 탭/버튼/설명 영어화, 도커 재빌드 및 정상 구동 확인 |
 | 2026-03-08 (Day 6) | **Phase 6 전면 재설계 — OLS+PI RUL → 3-Pillar 독립 고장 모드 알람** | pillar_results 테이블 신규, Mann-Kendall 순수 Python 구현, P1(ψ 하락)/P2(v_std 상승)/P3(누설전류 절대값) 독립 판정, 각 Pillar 시계열 차트(기준선+임계선), Alembic 마이그레이션 008, Step3PillarResponse 스키마 |
+| 2026-03-10 (Day 7) | **[LLM-1] Step 1/2/3 LLM 챗봇 Q&A 사이드바 구현** | OpenAI gpt-4o-mini 스트리밍, chatbot-store(Zustand), chatbot-prompts(Step별 시스템 프롬프트), ChatbotPanel(shadcn Sheet), ApiKeyInput/MessageList/ChatInput/ChatbotTrigger 5개 컴포넌트, 자동 초기 요약, 멀티턴 히스토리, react-markdown 렌더링 |
+| 2026-03-10 (Day 7) | **[LLM-1 확장] Vision 챗봇 업그레이드** | html2canvas로 step-result-area 캡처 → JPEG base64 → gpt-5 vision API 초기 요약 / 후속 Q&A는 gpt-5-mini 텍스트 모드. VISION_MODEL/QA_MODEL 상수 분리, captureScreenshot() 동적 import, handleSendWithVision() 추가. Step 1/2/3 페이지에 id="step-result-area" 추가. 닫기 버튼 중복 버그(SheetContent 기본 버튼 + 커스텀 버튼) showCloseButton={false}로 수정. |
 
 ### Phase별 기술 영역 분포
 - Backend: 22개 태스크 (51%)
