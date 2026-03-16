@@ -51,11 +51,19 @@ interface Step2bPageProps {
 // Health status color utilities
 // ============================================================
 
+// GMM 점수 → Stable/Elevated/Anomalous 상태로 매핑 (백엔드 값과 별개로 프론트 재매핑)
+function scoreToStatus(score: number | null): string {
+  if (score == null) return "unknown";
+  if (score >= 70) return "Stable";
+  if (score >= 40) return "Elevated";
+  return "Anomalous";
+}
+
 function getStatusColor(status: string | null): string {
   switch (status) {
-    case "Normal":    return "text-green-600";
-    case "Degrading": return "text-yellow-600";
-    case "Critical":  return "text-red-600";
+    case "Stable":    return "text-green-600";
+    case "Elevated":  return "text-yellow-600";
+    case "Anomalous": return "text-red-600";
     default:          return "text-muted-foreground";
   }
 }
@@ -64,9 +72,9 @@ function getStatusBadgeVariant(
   status: string | null
 ): "default" | "secondary" | "destructive" | "outline" {
   switch (status) {
-    case "Normal":    return "default";
-    case "Degrading": return "secondary";
-    case "Critical":  return "destructive";
+    case "Stable":    return "default";
+    case "Elevated":  return "secondary";
+    case "Anomalous": return "destructive";
     default:          return "outline";
   }
 }
@@ -182,8 +190,8 @@ function Step2bRunButton({ wellId }: { wellId: string }) {
  * GMM health score time series.
  *
  * - Baseline window: blue background (most recent Rolling Baseline)
- * - Score color: Normal(green) / Degrading(yellow) / Critical(red)
- * - Threshold lines: 70 (Degrading boundary), 40 (Critical / RUL trigger)
+ * - Score color: Stable(green) / Elevated(yellow) / Anomalous(red)
+ * - Threshold lines: 70 (Elevated boundary), 40 (Anomalous / RUL trigger)
  * - onHover: passes selected date to parent → updates Contribution Radar
  */
 function HealthScoreChart({
@@ -227,13 +235,13 @@ function HealthScoreChart({
             fillcolor: "rgba(59, 130, 246, 0.07)",
             line: { width: 0 }, layer: "below" as const,
           }] : []),
-          // Degrading threshold (70pt)
+          // Elevated threshold (70pt)
           {
             type: "line" as const, xref: "paper" as const, yref: "y" as const,
             x0: 0, x1: 1, y0: 70, y1: 70,
             line: { color: "rgba(234, 179, 8, 0.6)", dash: "dot" as const, width: 1.5 },
           },
-          // Critical threshold (40pt) — RUL trigger
+          // Anomalous threshold (40pt) — RUL trigger
           {
             type: "line" as const, xref: "paper" as const, yref: "y" as const,
             x0: 0, x1: 1, y0: 40, y1: 40,
@@ -251,19 +259,19 @@ function HealthScoreChart({
           }] : []),
           {
             x: 0.01, y: 71, xref: "paper" as const, yref: "y" as const,
-            text: "Degrading (70)", showarrow: false,
+            text: "Elevated (70)", showarrow: false,
             font: { size: 9, color: "rgba(234, 179, 8, 0.8)" },
             xanchor: "left" as const, yanchor: "bottom" as const,
           },
           {
             x: 0.01, y: 41, xref: "paper" as const, yref: "y" as const,
-            text: "Critical (40) — RUL threshold", showarrow: false,
+            text: "Anomalous (40) — RUL threshold", showarrow: false,
             font: { size: 9, color: "rgba(239, 68, 68, 0.8)" },
             xanchor: "left" as const, yanchor: "bottom" as const,
           },
         ],
         xaxis: { title: { text: "Date" }, type: "date" },
-        yaxis: { title: { text: "Health Score (0–100)" }, range: [0, 110] },
+        yaxis: { title: { text: "Trend Score (0–100)" }, range: [0, 110] },
         margin: { t: 20, r: 20, b: 50, l: 70 },
         autosize: true,
         paper_bgcolor: "transparent",
@@ -274,10 +282,13 @@ function HealthScoreChart({
       config={{ responsive: true, displayModeBar: false }}
       style={{ width: "100%", height: "100%" }}
       useResizeHandler
-      // Hover: pass selected date to parent → update Contribution Radar
-      onHover={(event: any) => {
-        const date = event.points[0]?.x as string;
-        if (date) onDateSelect(date);
+      // Hover: pointIndex로 scores 배열 직접 인덱싱 → 날짜 문자열 포맷 불일치 문제 해결
+      onHover={(event: { points: Array<{ pointIndex: number }> }) => {
+        const point = event.points[0];
+        if (!point) return;
+        // pointIndex = Plotly 데이터 배열상의 인덱스 → scores 배열과 1:1 대응
+        const matched = result.scores[point.pointIndex];
+        if (matched) onDateSelect(matched.date);
       }}
     />
   );
@@ -363,17 +374,18 @@ function Step2bResultPanel({ result }: { result: Step2Response }) {
         .sort((a, b) => (a.health_score ?? 100) - (b.health_score ?? 100))[0];
       setSelectedDate(lowest?.date ?? scores.at(-1)?.date ?? null);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [result]);
 
   // Selected date data point (Radar Chart input)
   const selectedPoint = scores.find((s) => s.date === selectedDate) ?? null;
 
-  // Summary stats
-  const latestScore   = [...scores].reverse().find((s) => s.health_score != null);
-  const criticalDays  = scores.filter((s) => (s.health_score ?? 100) < 40).length;
-  const degradingDays = scores.filter(
-    (s) => (s.health_score ?? 100) >= 40 && (s.health_score ?? 100) < 70
-  ).length;
+  // Summary stats (Stable/Elevated/Anomalous 기준)
+  const latestScore    = [...scores].reverse().find((s) => s.health_score != null);
+  const latestStatus   = scoreToStatus(latestScore?.health_score ?? null);
+  const stableDays     = scores.filter((s) => (s.health_score ?? 100) >= 70).length;
+  const elevatedDays   = scores.filter((s) => { const v = s.health_score ?? 100; return v >= 40 && v < 70; }).length;
+  const anomalousDays  = scores.filter((s) => (s.health_score ?? 100) < 40).length;
 
   // Mahalanobis column is always null in GMM-LL mode; hide chart when so
   const hasMahalanobis = scores.some((s) => s.mahalanobis_distance != null);
@@ -382,33 +394,29 @@ function Step2bResultPanel({ result }: { result: Step2Response }) {
     <div className="space-y-4">
       {/* Summary cards */}
       <div className="grid grid-cols-3 gap-4">
-        {/* Latest health score */}
+        {/* Current Status: 배지 + 최신 GMM 점수 */}
         <Card className="border-slate-200">
           <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground mb-1">Current Health Score (GMM)</p>
-            <div className="flex items-end gap-2">
-              <span className={`text-2xl font-bold tabular-nums ${
-                getStatusColor(latestScore?.health_status ?? null)
-              }`}>
+            <p className="text-xs text-muted-foreground mb-1">Current Status</p>
+            <Badge
+              variant={getStatusBadgeVariant(latestStatus)}
+              className="text-sm px-3 py-1 mb-2"
+            >
+              {latestStatus}
+            </Badge>
+            <div className="flex items-end gap-1 mt-1">
+              <span className={`text-xl font-bold tabular-nums ${getStatusColor(latestStatus)}`}>
                 {latestScore?.health_score?.toFixed(1) ?? "—"}
               </span>
               <span className="text-xs text-muted-foreground mb-0.5">/ 100</span>
             </div>
-            {latestScore?.health_status && (
-              <Badge
-                variant={getStatusBadgeVariant(latestScore.health_status)}
-                className="text-xs mt-1"
-              >
-                {latestScore.health_status}
-              </Badge>
-            )}
           </CardContent>
         </Card>
 
-        {/* Rolling Baseline window info */}
+        {/* Baseline Window: 학습 구간 + features_used */}
         <Card className="border-purple-200 bg-purple-50/30 dark:bg-purple-950/20">
           <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground mb-1">Rolling Baseline Window (60 days)</p>
+            <p className="text-xs text-muted-foreground mb-1">Baseline Window</p>
             <p className="text-xs font-mono font-semibold">
               {result.training_start ?? "—"}
             </p>
@@ -426,24 +434,22 @@ function Step2bResultPanel({ result }: { result: Step2Response }) {
           </CardContent>
         </Card>
 
-        {/* Days per status */}
+        {/* Deviation Statistics: Stable/Elevated/Anomalous 일수 */}
         <Card>
           <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground mb-2">Days by Status</p>
+            <p className="text-xs text-muted-foreground mb-2">Deviation Statistics</p>
             <div className="space-y-1">
               <div className="flex justify-between text-xs">
-                <span className="text-green-600">Normal (≥70)</span>
-                <span className="font-mono">
-                  {scores.filter((s) => (s.health_score ?? 100) >= 70).length} days
-                </span>
+                <span className="text-green-600">Stable (≥70)</span>
+                <span className="font-mono">{stableDays} days</span>
               </div>
               <div className="flex justify-between text-xs">
-                <span className="text-yellow-600">Degrading (40–70)</span>
-                <span className="font-mono">{degradingDays} days</span>
+                <span className="text-yellow-600">Elevated (40–70)</span>
+                <span className="font-mono">{elevatedDays} days</span>
               </div>
               <div className="flex justify-between text-xs">
-                <span className="text-red-600">Critical (&lt;40)</span>
-                <span className="font-mono font-semibold">{criticalDays} days</span>
+                <span className="text-red-600">Anomalous (&lt;40)</span>
+                <span className="font-mono font-semibold">{anomalousDays} days</span>
               </div>
             </div>
           </CardContent>
@@ -455,11 +461,11 @@ function Step2bResultPanel({ result }: { result: Step2Response }) {
         {/* Health score time series */}
         <Card className="col-span-2">
           <CardHeader className="py-3 px-4">
-            <CardTitle className="text-sm">GMM Health Score</CardTitle>
+            <CardTitle className="text-sm">Trend Score</CardTitle>
             <p className="text-xs text-muted-foreground">
               <span className="text-blue-500 font-medium">Blue background</span> = Rolling Baseline window.{" "}
-              <span className="text-yellow-600 font-medium">Yellow dashed</span> = Degrading (70).{" "}
-              <span className="text-red-500 font-medium">Red dashed</span> = Critical (40, RUL trigger).
+              <span className="text-yellow-600 font-medium">Yellow dashed</span> = Elevated (70).{" "}
+              <span className="text-red-500 font-medium">Red dashed</span> = Anomalous (40).
               Hover on a date to update the contribution radar.
             </p>
           </CardHeader>
@@ -471,12 +477,15 @@ function Step2bResultPanel({ result }: { result: Step2Response }) {
         {/* Feature contribution Radar Chart */}
         <Card>
           <CardHeader className="py-3 px-4">
-            <CardTitle className="text-sm">Contribution Analysis</CardTitle>
+            <CardTitle className="text-sm">GMM Feature Contribution</CardTitle>
             {/* Selected date + normal range warning */}
             <p className="text-xs text-muted-foreground">
               {selectedDate ?? "Hover to select a date"}
-              {selectedPoint && (selectedPoint.health_score ?? 100) >= 70 && (
-                <span className="text-yellow-600"> (Score in normal range)</span>
+              {selectedPoint && scoreToStatus(selectedPoint.health_score ?? null) === "Stable" && (
+                <span className="text-green-600"> (Stable)</span>
+              )}
+              {selectedPoint && scoreToStatus(selectedPoint.health_score ?? null) === "Anomalous" && (
+                <span className="text-red-600"> (Anomalous — inspect root cause)</span>
               )}
             </p>
           </CardHeader>
@@ -526,11 +535,12 @@ export default function Step2bPage({ params }: Step2bPageProps) {
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="text-sm font-semibold">
-              Step 2-B. Health Score (GMM — Supplementary)
+              Step 2-B. Trend Analysis (GMM — Supplementary)
             </h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              EWMA(span=7) → Rolling GMM (60-day window) + Log-Likelihood piecewise normalization →{" "}
-              Health score 0–100. Contribution radar for feature-level root cause analysis.
+              EWMA(span=7) → Rolling GMM (60-day window) + Log-Likelihood normalization →{" "}
+              Status: Stable (≥70) / Elevated (40–70) / Anomalous (&lt;40).
+              Contribution radar shows per-feature GMM deviation ratios.
               Supplementary analysis — does not affect workflow status.
             </p>
           </div>

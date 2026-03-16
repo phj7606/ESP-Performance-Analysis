@@ -2,17 +2,24 @@
 Step 3 Service: 3-Pillar 독립 고장 모드 알람 모니터링
 
 3개 고장 모드를 각각 독립적으로 평가:
-  - Pillar 1 (Hydraulic):  ψ_ma30 Mann-Kendall 하락 추세 + CRITICAL 임계치
-  - Pillar 2 (Mechanical): v_std_ma30 Mann-Kendall 상승 추세 + CRITICAL 임계치
+  - Pillar 1 (Hydraulic):  ψ_ma30 slope Z-score 급감 + Mann-Kendall 중기 추세
+  - Pillar 2 (Mechanical): v_std_ma30 slope Z-score 급증 + Mann-Kendall 중기 추세
   - Pillar 3 (Electrical): current_leak 이동 중앙값 절대값 + 3일 지속 조건
 
 통합 점수 없음. 예지 날짜 없음. 각 Pillar를 독립 판정.
 
-알람 등급:
-  CRITICAL: 현재 값이 임계치 초과/하회 (즉각 조치 필요)
-  WARNING:  Mann-Kendall 검정 유의한 추세 감지 (p<0.05)
-  NORMAL:   정상
-  UNKNOWN:  데이터 부족 또는 없음
+알람 등급 (Pillar 1/2):
+  CRITICAL: 최근 30일 기울기가 전체 운전 이력 대비 Z ≤ -2.0(P1) / Z ≥ +2.0(P2)
+            → "전체 이력에서 가장 가파른 ~2.3% 수준"의 이례적 변화
+  WARNING:  Mann-Kendall p < 0.05 AND tau 방향 일치 (60일 중기 추세 유의)
+  NORMAL:   그 외
+  UNKNOWN:  slope 이력 < 60 포인트 (신규 Well) 또는 데이터 없음
+
+설계 근거 (절대값 임계치 → slope Z-score 전환):
+  run-in → 셧다운 → 재가동이 반복되는 ESP에서 "초기 안정 구간"을 절대값
+  기준으로 고정하면 run-in 저점이 baseline이 되어 CRITICAL이 발동하지 않음.
+  slope Z-score는 "전체 운전 이력 내 최근 기울기의 상대적 이상함"을 측정하므로
+  Well별 운전 특성을 자동 반영하며, 절대 레벨 무관하게 이례적 추세를 탐지.
 """
 from __future__ import annotations
 
@@ -41,7 +48,20 @@ from app.models.well import Well
 # 상수
 # ============================================================
 
-# Mann-Kendall 검정에 사용할 최근 N일 창
+# Pillar 1/2: 기울기 계산 창 (일) — 최근 30일 추세를 단기 신호로 포착
+SLOPE_WINDOW = 30
+
+# Pillar 1/2: Z-score 계산용 최소 slope 이력 포인트 수
+# (신규 Well은 이력 부족으로 UNKNOWN 반환)
+SLOPE_HISTORY_MIN = 60
+
+# Pillar 1: slope Z-score CRITICAL 임계치 (급감, 실데이터 검증: Z=-2.1이 실제 극점)
+P1_CRITICAL_Z = -2.0
+
+# Pillar 2: slope Z-score CRITICAL 임계치 (급증)
+P2_CRITICAL_Z = +2.0
+
+# Mann-Kendall 검정에 사용할 최근 N일 창 (중기 WARNING용)
 MK_WINDOW = 60
 
 # Pillar 3: 이동 중앙값 창 (스파이크 노이즈 제거)
@@ -50,15 +70,14 @@ LEAK_MEDIAN_DAYS = 7
 # Pillar 3: 연속 초과 지속 일수 조건 (일시적 스파이크 방지)
 PERSIST_DAYS = 3
 
-# Pillar 1: 베이스라인 대비 CRITICAL 임계 하락 비율 (20% 하락)
-P1_DECLINE_RATIO = 0.20
-
-# Pillar 2: 베이스라인 대비 CRITICAL 임계 상승 비율 (50% 상승)
-P2_RISE_RATIO = 0.50
-
 # Pillar 3: WARNING / CRITICAL 임계치 (μA)
 P3_WARN_UA = 100
 P3_CRIT_UA = 1000
+
+# Pillar 4: 모터 온도 WARNING / CRITICAL 임계치 (°C)
+P4_WARN_TEMP = 130.0
+P4_CRIT_TEMP = 150.0
+TEMP_MEDIAN_DAYS = 7  # 스파이크 노이즈 제거용 이동 중앙값 창
 
 # Mann-Kendall 유의수준
 MK_ALPHA = 0.05
@@ -99,13 +118,16 @@ async def run_step3_analysis(
     psi_df   = await _load_residual_col(well_id, "psi_ma30", db)
     vstd_df  = await _load_residual_col(well_id, "v_std_ma30", db)
 
-    # ── 3. esp_daily_data에서 current_leak 로드 ────────────────
+    # ── 3. esp_daily_data에서 current_leak, motor_temp 로드 ───
     leak_df  = await _load_current_leak(well_id, db)
+    temp_df  = await _load_motor_temp(well_id, db)
 
     # ── 4. 각 Pillar 계산 ─────────────────────────────────────
-    p1 = _compute_pillar1(psi_df, training_end)
-    p2 = _compute_pillar2(vstd_df, training_end)
+    # P1/P2는 각자의 변수 CV로 독립 baseline 탐지 (training_end 불필요)
+    p1 = _compute_pillar1(psi_df)
+    p2 = _compute_pillar2(vstd_df)
     p3 = _compute_pillar3(leak_df)
+    p4 = _compute_pillar4(temp_df)
 
     # ── 5. pillar_results 저장 (Well당 최신 1건 유지) ──────────
     await db.execute(
@@ -133,6 +155,10 @@ async def run_step3_analysis(
         p3_current_val    = p3["current_val"],
         p3_days_exceeded  = p3["days_exceeded"],
         p3_data_available = p3["data_available"],
+        # Pillar 4
+        p4_status         = p4["status"],
+        p4_current_val    = p4["current_val"],
+        p4_data_available = p4["data_available"],
     ))
 
     # ── 6. analysis_sessions 파라미터 기록 ─────────────────────
@@ -142,6 +168,7 @@ async def run_step3_analysis(
             "p1_status": p1["status"],
             "p2_status": p2["status"],
             "p3_status": p3["status"],
+            "p4_status": p4["status"],
         },
         db=db,
     )
@@ -156,6 +183,7 @@ async def run_step3_analysis(
         "pillar1":     p1,
         "pillar2":     p2,
         "pillar3":     p3,
+        "pillar4":     p4,
     }
 
 
@@ -201,6 +229,11 @@ async def get_step3_result(well_id: str, db: AsyncSession) -> dict:
             "days_exceeded":  row.p3_days_exceeded,
             "data_available": row.p3_data_available if row.p3_data_available is not None else False,
         },
+        "pillar4": {
+            "status":         row.p4_status if hasattr(row, "p4_status") else "unknown",
+            "current_val":    row.p4_current_val if hasattr(row, "p4_current_val") else None,
+            "data_available": row.p4_data_available if hasattr(row, "p4_data_available") else False,
+        },
     }
 
 
@@ -208,132 +241,209 @@ async def get_step3_result(well_id: str, db: AsyncSession) -> dict:
 # Pillar 계산 함수
 # ============================================================
 
-def _compute_pillar1(psi_df: pd.DataFrame, training_end: date) -> dict:
+def _compute_slope_zscore(
+    series: pd.Series,
+    window: int = SLOPE_WINDOW,
+    min_history: int = SLOPE_HISTORY_MIN,
+) -> tuple[float, float]:
+    """
+    전체 운전 이력의 rolling slope 분포 기준으로 최근 slope Z-score를 반환.
+
+    설계 근거:
+      run-in → 셧다운 → 재가동이 반복되는 ESP에서 절대값 baseline 고정 방식은
+      run-in 저점이 baseline이 되어 CRITICAL이 발동하지 않는 구조적 문제가 있음.
+      slope Z-score는 "전체 운전 이력 대비 최근 기울기의 상대적 이상함"을
+      측정하므로 절대 레벨 무관하게 이례적 추세를 탐지 가능.
+
+    알고리즘:
+      1. 각 포인트 i에서 [i-window+1, i] 구간 선형회귀 기울기 계산
+      2. 전체 기울기 이력 (n ≥ min_history) → μ, σ 계산
+      3. Z = (현재 기울기 - μ) / σ
+
+    Returns:
+      (slope_zscore, slope_mean)
+        slope_zscore: Z값 (nan → 이력 부족 또는 계산 불가)
+        slope_mean:   전체 이력 slope 평균 μ (baseline_val 필드에 저장)
+    """
+    slopes = []
+    for i in range(len(series)):
+        start = max(0, i - window + 1)
+        segment = series.iloc[start : i + 1].dropna()
+        # 최소 5포인트 미만이면 기울기 신뢰 불가 → skip
+        if len(segment) < 5:
+            slopes.append(np.nan)
+            continue
+        x = np.arange(len(segment))
+        slope, _ = np.polyfit(x, segment.values, 1)
+        slopes.append(slope)
+
+    slope_series = pd.Series(slopes, index=series.index)
+    hist = slope_series.dropna()
+
+    # 이력 부족 (신규 Well) → UNKNOWN
+    if len(hist) < min_history:
+        return np.nan, np.nan
+
+    mu = float(hist.mean())
+    std = float(hist.std())
+
+    current_slope_raw = slope_series.iloc[-1]
+    if pd.isna(current_slope_raw):
+        return np.nan, mu
+
+    # std ≈ 0: 완전 단조 (기울기 변화 없음) → Z-score 의미 없음
+    if std < 1e-12:
+        return np.nan, mu
+
+    return (float(current_slope_raw) - mu) / std, mu
+
+
+def _compute_pillar1(psi_df: pd.DataFrame) -> dict:
     """
     Pillar 1: 유압 성능 알람 (Hydraulic Degradation)
 
     지표: ψ_ma30 (펌프 헤드 무차원화)
-    추세: Mann-Kendall 하락 검정 (최근 60일)
     알람:
-      - CRITICAL: 현재값 < threshold (baseline × 0.80)
-      - WARNING:  p < 0.05 AND tau < 0 (유의한 하락 추세)
+      - CRITICAL: slope Z-score ≤ -2.0 (급감 — 전체 이력 대비 가장 가파른 ~2.3%)
+      - WARNING:  Mann-Kendall p < 0.05 AND tau < 0 (60일 중기 하락 추세 유의)
       - NORMAL:   그 외
+      - UNKNOWN:  slope 이력 < 60 포인트 또는 데이터 없음
 
-    베이스라인: training_end 이전 구간 전체 평균
+    DB 필드 재활용 (스키마 변경 없음):
+      tau          → slope Z-score (기존: Mann-Kendall τ)
+      baseline_val → slope 이력 평균 μ (기존: anchor 평균)
+      threshold    → Z-score 임계치 -2.0 (기존: 절대 임계치)
     """
     if psi_df.empty:
         return _unknown_pillar()
 
-    # 베이스라인 평균 계산 (training_end 이전)
-    baseline_data = psi_df.loc[
-        psi_df["date"] <= pd.Timestamp(training_end), "value"
-    ].dropna()
-
-    if baseline_data.empty:
+    psi_series = psi_df.set_index("date")["value"].dropna()
+    if psi_series.empty:
         return _unknown_pillar()
 
-    baseline_val = float(baseline_data.mean())
-    threshold    = baseline_val * (1.0 - P1_DECLINE_RATIO)
+    current_val = float(psi_series.iloc[-1])
 
-    # 최근값
-    recent = psi_df["value"].dropna()
-    if recent.empty:
-        return _unknown_pillar()
-    current_val = float(recent.iloc[-1])
+    # slope Z-score: 전체 운전 이력 기준 최근 30일 기울기의 이상치 정도
+    slope_z, slope_mu = _compute_slope_zscore(psi_series, SLOPE_WINDOW)
 
-    # Mann-Kendall 검정 (최근 MK_WINDOW일)
+    # Mann-Kendall: 중기 60일 추세 (WARNING 판정용)
     mk_data = psi_df.dropna(subset=["value"]).tail(MK_WINDOW)["value"].values
-    if len(mk_data) < MK_MIN_POINTS:
-        # 데이터 부족: CRITICAL 판정만 가능
-        if current_val < threshold:
-            status = "critical"
-        else:
-            status = "unknown"
-        return {
-            "status": status, "tau": None, "pvalue": None,
-            "current_val": current_val, "baseline_val": baseline_val, "threshold": threshold,
-        }
-
-    mk = _mann_kendall(mk_data)
+    mk = _mann_kendall(mk_data) if len(mk_data) >= MK_MIN_POINTS else None
 
     # 알람 판정 (CRITICAL 우선)
-    if current_val < threshold:
+    if not np.isnan(slope_z) and slope_z <= P1_CRITICAL_Z:
         status = "critical"
-    elif mk.pvalue < MK_ALPHA and mk.tau < 0:
+    elif mk and mk.pvalue < MK_ALPHA and mk.tau < 0:
         status = "warning"
+    elif np.isnan(slope_z):
+        # slope 이력 부족 → UNKNOWN (신규 Well)
+        status = "unknown"
     else:
         status = "normal"
 
     return {
         "status":       status,
-        "tau":          round(float(mk.tau), 6),
-        "pvalue":       round(float(mk.pvalue), 6),
+        # tau 필드에 slope Z-score 저장 (DB 스키마 변경 없음)
+        "tau":          round(float(slope_z), 4) if not np.isnan(slope_z) else None,
+        "pvalue":       round(float(mk.pvalue), 6) if mk else None,
         "current_val":  round(current_val, 6),
-        "baseline_val": round(baseline_val, 6),
-        "threshold":    round(threshold, 6),
+        # baseline_val 필드에 slope 이력 평균 μ 저장
+        "baseline_val": round(float(slope_mu), 9) if not np.isnan(slope_mu) else None,
+        # threshold 필드에 Z-score 임계치 저장 (고정값 -2.0)
+        "threshold":    float(P1_CRITICAL_Z),
     }
 
 
-def _compute_pillar2(vstd_df: pd.DataFrame, training_end: date) -> dict:
+def _compute_pillar2(vstd_df: pd.DataFrame) -> dict:
     """
     Pillar 2: 기계 진동 알람 (Mechanical Wear)
 
     지표: v_std_ma30 (진동 지수)
-    추세: Mann-Kendall 상승 검정 (최근 60일)
     알람:
-      - CRITICAL: 현재값 > threshold (baseline × 1.50)
-      - WARNING:  p < 0.05 AND tau > 0 (유의한 상승 추세)
+      - CRITICAL: slope Z-score ≥ +2.0 (급증 — 전체 이력 대비 가장 가파른 ~2.3%)
+      - WARNING:  Mann-Kendall p < 0.05 AND tau > 0 (60일 중기 상승 추세 유의)
       - NORMAL:   그 외
+      - UNKNOWN:  slope 이력 < 60 포인트 또는 데이터 없음
+
+    DB 필드 재활용 (스키마 변경 없음):
+      tau          → slope Z-score (기존: Mann-Kendall τ)
+      baseline_val → slope 이력 평균 μ (기존: anchor 평균)
+      threshold    → Z-score 임계치 +2.0 (기존: 절대 임계치)
     """
     if vstd_df.empty:
         return _unknown_pillar()
 
-    # 베이스라인 평균 계산
-    baseline_data = vstd_df.loc[
-        vstd_df["date"] <= pd.Timestamp(training_end), "value"
-    ].dropna()
-
-    if baseline_data.empty:
+    vstd_series = vstd_df.set_index("date")["value"].dropna()
+    if vstd_series.empty:
         return _unknown_pillar()
 
-    baseline_val = float(baseline_data.mean())
-    threshold    = baseline_val * (1.0 + P2_RISE_RATIO)
+    current_val = float(vstd_series.iloc[-1])
 
-    # 최근값
-    recent = vstd_df["value"].dropna()
-    if recent.empty:
-        return _unknown_pillar()
-    current_val = float(recent.iloc[-1])
+    # slope Z-score: 전체 운전 이력 기준 최근 30일 기울기의 이상치 정도
+    slope_z, slope_mu = _compute_slope_zscore(vstd_series, SLOPE_WINDOW)
 
-    # Mann-Kendall 검정
+    # Mann-Kendall: 중기 60일 추세 (WARNING 판정용)
     mk_data = vstd_df.dropna(subset=["value"]).tail(MK_WINDOW)["value"].values
-    if len(mk_data) < MK_MIN_POINTS:
-        if current_val > threshold:
-            status = "critical"
-        else:
-            status = "unknown"
-        return {
-            "status": status, "tau": None, "pvalue": None,
-            "current_val": current_val, "baseline_val": baseline_val, "threshold": threshold,
-        }
-
-    mk = _mann_kendall(mk_data)
+    mk = _mann_kendall(mk_data) if len(mk_data) >= MK_MIN_POINTS else None
 
     # 알람 판정 (CRITICAL 우선)
-    if current_val > threshold:
+    if not np.isnan(slope_z) and slope_z >= P2_CRITICAL_Z:
         status = "critical"
-    elif mk.pvalue < MK_ALPHA and mk.tau > 0:
+    elif mk and mk.pvalue < MK_ALPHA and mk.tau > 0:
         status = "warning"
+    elif np.isnan(slope_z):
+        status = "unknown"
     else:
         status = "normal"
 
     return {
         "status":       status,
-        "tau":          round(float(mk.tau), 6),
-        "pvalue":       round(float(mk.pvalue), 6),
+        "tau":          round(float(slope_z), 4) if not np.isnan(slope_z) else None,
+        "pvalue":       round(float(mk.pvalue), 6) if mk else None,
         "current_val":  round(current_val, 6),
-        "baseline_val": round(baseline_val, 6),
-        "threshold":    round(threshold, 6),
+        "baseline_val": round(float(slope_mu), 9) if not np.isnan(slope_mu) else None,
+        "threshold":    float(P2_CRITICAL_Z),
+    }
+
+
+def _compute_pillar4(temp_df: pd.DataFrame) -> dict:
+    """
+    Pillar 4: 모터 온도 알람 (Thermal)
+
+    지표: motor_temp (°C)
+    방식: 7일 이동 중앙값 (스파이크 노이즈 제거)
+    알람:
+      - CRITICAL: 7일 이동 중앙값 ≥ 150°C
+      - WARNING:  7일 이동 중앙값 ≥ 130°C
+      - NORMAL:   그 외
+      - UNKNOWN:  motor_temp 전부 null
+    """
+    if temp_df.empty:
+        return {"status": "unknown", "current_val": None, "data_available": False}
+
+    non_null = temp_df.dropna(subset=["value"])
+    if non_null.empty:
+        return {"status": "unknown", "current_val": None, "data_available": False}
+
+    # 7일 이동 중앙값으로 스파이크 노이즈 제거
+    temp_df = temp_df.copy()
+    temp_df["rolling_med"] = temp_df["value"].rolling(
+        window=TEMP_MEDIAN_DAYS, min_periods=1
+    ).median()
+
+    latest = float(temp_df["rolling_med"].dropna().iloc[-1])
+
+    if latest >= P4_CRIT_TEMP:
+        status = "critical"
+    elif latest >= P4_WARN_TEMP:
+        status = "warning"
+    else:
+        status = "normal"
+
+    return {
+        "status":         status,
+        "current_val":    round(latest, 2),
+        "data_available": True,
     }
 
 
@@ -470,6 +580,27 @@ async def _load_residual_col(
         select(ResidualData.date, col_attr)
         .where(ResidualData.well_id == uuid.UUID(well_id))
         .order_by(ResidualData.date.asc())
+    )
+    result = await db.execute(stmt)
+    rows = result.fetchall()
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows, columns=["date", "value"])
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+async def _load_motor_temp(well_id: str, db: AsyncSession) -> pd.DataFrame:
+    """
+    esp_daily_data에서 motor_temp 시계열 로드.
+    결과: DataFrame columns = ['date', 'value']
+    """
+    stmt = (
+        select(EspDailyData.date, EspDailyData.motor_temp)
+        .where(EspDailyData.well_id == uuid.UUID(well_id))
+        .order_by(EspDailyData.date.asc())
     )
     result = await db.execute(stmt)
     rows = result.fetchall()

@@ -70,6 +70,15 @@ REQUIRED_COLUMNS: list[str] = [
     "motor_current",
 ]
 
+# Step 1~3 ML 분석에 필요한 권장 컬럼 (없어도 업로드는 가능하지만 경고 표시)
+RECOMMENDED_COLUMNS: list[str] = [
+    "motor_power",   # Step 1: 전력 기반 무차원 지수 Cp 계산에 필요
+    "motor_temp",    # Step 1: 열 효율 지수 T_eff 계산에 필요
+    "motor_vib",     # Step 1/2: 진동 표준편차 V_std (GMM 입력 피처)
+    "ti",            # Step 1: 흡입구 온도
+    "pd",            # Step 1: 토출 압력
+]
+
 # List of numeric measurement columns (included in SET clause during upsert)
 MEASUREMENT_COLUMNS: list[str] = [
     "choke", "whp", "flt", "casing_pressure", "casing_pressure_2",

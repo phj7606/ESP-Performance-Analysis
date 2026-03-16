@@ -111,11 +111,13 @@ class TestUploadSuccess:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["well_name"] == TEST_WELL_NAME
-        assert data["records_inserted"] == n_rows
-        assert data["date_range"]["start"] == "2023-09-22"
-        assert data["date_range"]["end"] == "2023-09-26"   # 5 days: 22~26
-        assert TEST_WELL_NAME in data["message"]
+        # 멀티시트 지원 후 응답 구조: {"wells": [...], "total_wells": N}
+        assert data["total_wells"] == 1
+        well = data["wells"][0]
+        assert well["well_name"] == TEST_WELL_NAME
+        assert well["records_inserted"] == n_rows
+        assert well["date_range"]["start"] == "2023-09-22"
+        assert well["date_range"]["end"] == "2023-09-26"   # 5 days: 22~26
 
     async def test_upload_well_api_accessible(self, client, cleanup_test_well):
         """
@@ -217,7 +219,8 @@ class TestWellNameNormalization:
         resp = await client.post("/api/upload", files=_excel_files(_make_excel(well_name=raw_name)))
 
         assert resp.status_code == 200
-        assert resp.json()["well_name"] == expected
+        # 멀티시트 지원 후 응답 구조: {"wells": [...], "total_wells": N}
+        assert resp.json()["wells"][0]["well_name"] == expected
 
 
 # ============================================================
@@ -242,8 +245,9 @@ class TestUploadIdempotency:
         assert resp2.status_code == 200
 
         # records_inserted returns the number of parsed rows (upsert attempt count)
-        assert resp1.json()["records_inserted"] == n_rows
-        assert resp2.json()["records_inserted"] == n_rows
+        # 멀티시트 지원 후 응답 구조: {"wells": [...], "total_wells": N}
+        assert resp1.json()["wells"][0]["records_inserted"] == n_rows
+        assert resp2.json()["wells"][0]["records_inserted"] == n_rows
 
     async def test_duplicate_upload_well_count(self, client, cleanup_test_well):
         """

@@ -42,29 +42,6 @@ interface Step2PageProps {
 }
 
 // ============================================================
-// Health status color utilities
-// ============================================================
-
-function getStatusColor(status: string | null): string {
-  switch (status) {
-    case "Normal":    return "text-green-600";
-    case "Degrading": return "text-yellow-600";
-    case "Critical":  return "text-red-600";
-    default:          return "text-muted-foreground";
-  }
-}
-
-function getStatusBadgeVariant(status: string | null): "default" | "secondary" | "destructive" | "outline" {
-  switch (status) {
-    case "Normal":    return "default";
-    case "Degrading": return "secondary";
-    case "Critical":  return "destructive";
-    default:          return "outline";
-  }
-}
-
-
-// ============================================================
 // Dual-panel trend chart: top (per-feature scores), bottom (composite score)
 // ============================================================
 
@@ -74,7 +51,7 @@ function getStatusBadgeVariant(status: string | null): "default" | "secondary" |
  * Top panel: Per-feature health score trajectories (score_eta, score_v_std, score_t_eff)
  *   - Lower score on a feature → that feature is degrading
  * Bottom panel: Composite health score + 70/40 threshold lines
- *   - Green = Normal, Yellow = Degrading, Red = Critical
+ *   - Green = Stable, Yellow = Elevated, Red = Anomalous
  */
 function TrendHealthChart({
   result,
@@ -85,56 +62,58 @@ function TrendHealthChart({
 }) {
   const scores = result.scores;
   const dates  = scores.map((s) => s.date);
-  const values = scores.map((s) => s.health_score);
 
-  // Health status color array for composite score markers
-  const markerColors = scores.map((s) => {
-    if ((s.health_score ?? 100) >= 70) return "rgba(34, 197, 94, 0.7)";
-    if ((s.health_score ?? 100) >= 40) return "rgba(234, 179, 8, 0.8)";
-    return "rgba(239, 68, 68, 0.8)";
-  });
+  // Per-feature deviation trajectories (Z-score, 부호 포함)
+  const devEtaVals  = scores.map((s) => s.deviation_eta);
+  const devVstdVals = scores.map((s) => s.deviation_v_std);
+  const devTeffVals = scores.map((s) => s.deviation_t_eff);
 
-  // Per-feature score trajectories
-  const scoreEtaVals  = scores.map((s) => s.score_eta);
-  const scoreVstdVals = scores.map((s) => s.score_v_std);
-  const scoreTeffVals = scores.map((s) => s.score_t_eff);
+  // Bottom 패널: Composite |Z| = |η|×0.5 + |v_std|×0.3 + |t_eff|×0.2
+  // 가중 합산으로 단일 이상 크기 지표 생성 — 방향 정보 없이 심각도만 반영
+  const compositeZVals = scores.map((s) =>
+    Math.abs(s.deviation_eta ?? 0) * 0.5 +
+    Math.abs(s.deviation_v_std ?? 0) * 0.3 +
+    Math.abs(s.deviation_t_eff ?? 0) * 0.2
+  );
 
   return (
     <Plot
       data={[
-        // ── Top subplot: per-feature score trajectories ──
+        // ── Top subplot: per-feature deviation Z-score trajectories ──
         {
-          x: dates, y: scoreEtaVals,
+          x: dates, y: devEtaVals,
           type: "scatter", mode: "lines",
           name: "Efficiency (η_proxy)",
           line: { color: "rgba(99, 102, 241, 0.7)", width: 1.5 },
-          hovertemplate: "η_proxy score: %{y:.1f}<extra></extra>",
+          hovertemplate: "η_proxy deviation: %{y:.2f}σ<extra></extra>",
           xaxis: "x", yaxis: "y",
         },
         {
-          x: dates, y: scoreVstdVals,
+          x: dates, y: devVstdVals,
           type: "scatter", mode: "lines",
           name: "Vibration (v_std)",
           line: { color: "rgba(249, 115, 22, 0.7)", width: 1.5 },
-          hovertemplate: "v_std score: %{y:.1f}<extra></extra>",
+          hovertemplate: "v_std deviation: %{y:.2f}σ<extra></extra>",
           xaxis: "x", yaxis: "y",
         },
         {
-          x: dates, y: scoreTeffVals,
+          x: dates, y: devTeffVals,
           type: "scatter", mode: "lines",
           name: "Cooling (t_eff)",
           line: { color: "rgba(20, 184, 166, 0.7)", width: 1.5 },
-          hovertemplate: "t_eff score: %{y:.1f}<extra></extra>",
+          hovertemplate: "t_eff deviation: %{y:.2f}σ<extra></extra>",
           xaxis: "x", yaxis: "y",
         },
-        // ── Bottom subplot: composite health score ──
+        // ── Bottom subplot: Composite |Z| (weighted anomaly magnitude) ──
+        // fill: tozeroy로 면적 강조 → 이상 심각도를 직관적으로 시각화
         {
-          x: dates, y: values,
-          type: "scatter", mode: "lines+markers",
-          name: "Composite Score",
-          line: { color: "rgba(99, 102, 241, 0.5)", width: 1 },
-          marker: { color: markerColors, size: 4 },
-          hovertemplate: "Date: %{x}<br>Score: %{y:.1f}<extra></extra>",
+          x: dates, y: compositeZVals,
+          type: "scatter", mode: "lines",
+          name: "Composite |Z|",
+          line: { color: "rgba(99, 102, 241, 0.85)", width: 1.5 },
+          fill: "tozeroy",
+          fillcolor: "rgba(99, 102, 241, 0.08)",
+          hovertemplate: "Composite |Z|: %{y:.3f}<extra></extra>",
           xaxis: "x2", yaxis: "y2",
         },
       ]}
@@ -146,39 +125,45 @@ function TrendHealthChart({
           roworder: "top to bottom" as const,
         },
         shapes: [
-          // Degrading threshold (bottom panel, 70pt)
+          // Top panel: y=0 기준선 (방향 편차의 중립 기준)
+          {
+            type: "line" as const, xref: "paper" as const, yref: "y" as const,
+            x0: 0, x1: 1, y0: 0, y1: 0,
+            line: { color: "rgba(100, 116, 139, 0.5)", dash: "solid" as const, width: 1 },
+          },
+          // Bottom panel: Elevated 1.0 기준선 (yellow dashed)
           {
             type: "line" as const, xref: "paper" as const, yref: "y2" as const,
-            x0: 0, x1: 1, y0: 70, y1: 70,
+            x0: 0, x1: 1, y0: 1.0, y1: 1.0,
             line: { color: "rgba(234, 179, 8, 0.6)", dash: "dot" as const, width: 1.5 },
           },
-          // Critical threshold (bottom panel, 40pt) — RUL trigger
+          // Bottom panel: Anomalous 2.0 기준선 (red dashed)
           {
             type: "line" as const, xref: "paper" as const, yref: "y2" as const,
-            x0: 0, x1: 1, y0: 40, y1: 40,
+            x0: 0, x1: 1, y0: 2.0, y1: 2.0,
             line: { color: "rgba(239, 68, 68, 0.7)", dash: "dot" as const, width: 2 },
           },
         ],
         annotations: [
           {
-            x: 0.01, y: 71, xref: "paper" as const, yref: "y2" as const,
-            text: "Degrading (70)", showarrow: false,
+            x: 0.01, y: 1.02, xref: "paper" as const, yref: "y2" as const,
+            text: "Elevated (|Z|≥1.0)", showarrow: false,
             font: { size: 9, color: "rgba(234, 179, 8, 0.8)" },
             xanchor: "left" as const, yanchor: "bottom" as const,
           },
           {
-            x: 0.01, y: 41, xref: "paper" as const, yref: "y2" as const,
-            text: "Critical (40) — RUL threshold", showarrow: false,
+            x: 0.01, y: 2.02, xref: "paper" as const, yref: "y2" as const,
+            text: "Anomalous (|Z|≥2.0)", showarrow: false,
             font: { size: 9, color: "rgba(239, 68, 68, 0.8)" },
             xanchor: "left" as const, yanchor: "bottom" as const,
           },
         ],
-        // Top subplot axes — 기준 x축 (bottom panel이 이 축을 따름)
+        // Top subplot: 방향성 Z-score (-3.5 ~ +3.5 범위)
         xaxis:  { type: "date", showticklabels: false },
-        yaxis:  { title: { text: "Per-Feature Score" }, range: [0, 110] },
-        // Bottom subplot axes — matches: 'x' 로 top panel x축과 줌/팬 연동
+        yaxis:  { title: { text: "Deviation (Z-score)" }, range: [-3.5, 3.5] },
+        // Bottom subplot: Composite |Z| (0 ~ 4 범위 — 항상 양수)
         xaxis2: { title: { text: "Date" }, type: "date", matches: "x" },
-        yaxis2: { title: { text: "Composite Health Score" }, range: [0, 110] },
+        yaxis2: { title: { text: "Composite |Z|" }, range: [0, 4] },
         margin: { t: 10, r: 20, b: 50, l: 70 },
         autosize: true,
         paper_bgcolor: "transparent",
@@ -190,10 +175,14 @@ function TrendHealthChart({
       config={{ responsive: true, displayModeBar: false }}
       style={{ width: "100%", height: "100%" }}
       useResizeHandler
-      // Hover: pass selected date to parent → Radar chart update
-      onHover={(event: any) => {
-        const date = event.points[0]?.x as string;
-        if (date) onDateSelect(date);
+      // Hover: pointIndex로 scores 배열 직접 인덱싱 → 날짜 문자열 포맷 불일치 문제 해결
+      // unified hover 모드에서 여러 trace가 같은 x를 공유하므로 첫 번째 point의 index 사용
+      onHover={(event: { points: Array<{ pointIndex: number }> }) => {
+        const point = event.points[0];
+        if (!point) return;
+        // pointIndex = Plotly 데이터 배열상의 인덱스 → scores 배열과 1:1 대응
+        const matched = result.scores[point.pointIndex];
+        if (matched) onDateSelect(matched.date);
       }}
     />
   );
@@ -213,7 +202,7 @@ function TrendHealthChart({
  */
 function FeatureScoreRadar({ point }: { point: Step2bScorePoint | null }) {
   // Show placeholder if no data point selected
-  if (!point || point.score_eta == null) {
+  if (!point || point.deviation_eta == null) {
     return (
       <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
         Hover over the chart to select a date
@@ -221,13 +210,12 @@ function FeatureScoreRadar({ point }: { point: Step2bScorePoint | null }) {
     );
   }
 
-  const eta   = point.score_eta   ?? 100;
-  const vstd  = point.score_v_std ?? 100;
-  const teff  = point.score_t_eff ?? 100;
-  const score = point.health_score ?? 100;
-
-  // Danger color when score drops below 60
-  const lowScore = score < 60;
+  // 레이더 차트: deviation 절대값으로 "어느 방향이 이상한지" 시각화
+  const eta   = Math.abs(point.deviation_eta   ?? 0);
+  const vstd  = Math.abs(point.deviation_v_std ?? 0);
+  const teff  = Math.abs(point.deviation_t_eff ?? 0);
+  const compositeZ = eta * 0.5 + vstd * 0.3 + teff * 0.2;
+  const lowScore = compositeZ >= 1.0;
 
   return (
     <Plot
@@ -245,11 +233,11 @@ function FeatureScoreRadar({ point }: { point: Step2bScorePoint | null }) {
             ? "rgba(239, 68, 68, 0.8)"
             : "rgba(99, 102, 241, 0.6)",
         },
-        hovertemplate: "%{theta}: %{r:.1f}pt<extra></extra>",
+        hovertemplate: "%{theta}: %{r:.2f}σ<extra></extra>",
       }]}
       layout={{
         polar: {
-          radialaxis: { visible: true, range: [0, 100] },
+          radialaxis: { visible: true, range: [0, 3] },
         },
         margin: { t: 30, r: 30, b: 30, l: 30 },
         autosize: true,
@@ -275,88 +263,107 @@ function Step2ResultPanel({ result }: { result: Step2bResponse }) {
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
   useEffect(() => {
+    // result가 변경될 때마다 초기 선택 날짜를 재계산.
+    // result 의존성만 사용하는 이유: scores/selectedDate를 추가하면 무한 루프 발생.
     if (!selectedDate && scores.length > 0) {
-      const lowest = [...scores]
-        .filter((s) => s.health_score != null)
-        .sort((a, b) => (a.health_score ?? 100) - (b.health_score ?? 100))[0];
-      setSelectedDate(lowest?.date ?? scores.at(-1)?.date ?? null);
+      // deviation이 있는 경우: composite_z가 가장 높은 날짜로 초기 선택 (이상 탐지 포인트)
+      const withDeviation = [...scores].filter((s) => s.deviation_eta != null);
+      if (withDeviation.length > 0) {
+        const highest = withDeviation.sort((a, b) => {
+          const zA = Math.abs(a.deviation_eta ?? 0) * 0.5 + Math.abs(a.deviation_v_std ?? 0) * 0.3 + Math.abs(a.deviation_t_eff ?? 0) * 0.2;
+          const zB = Math.abs(b.deviation_eta ?? 0) * 0.5 + Math.abs(b.deviation_v_std ?? 0) * 0.3 + Math.abs(b.deviation_t_eff ?? 0) * 0.2;
+          return zB - zA;
+        })[0];
+        setSelectedDate(highest?.date ?? scores.at(-1)?.date ?? null);
+      } else {
+        setSelectedDate(scores.at(-1)?.date ?? null);
+      }
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [result]);
 
   const selectedPoint = scores.find((s) => s.date === selectedDate) ?? null;
 
-  // Summary stats
-  const latestScore   = [...scores].reverse().find((s) => s.health_score != null);
-  const criticalDays  = scores.filter((s) => (s.health_score ?? 100) < 40).length;
-  const degradingDays = scores.filter(
-    (s) => (s.health_score ?? 100) >= 40 && (s.health_score ?? 100) < 70
-  ).length;
-  const normalDays = scores.filter((s) => (s.health_score ?? 100) >= 70).length;
+  // composite_z 계산 헬퍼
+  const computeCompositeZ = (s: Step2bScorePoint) =>
+    Math.abs(s.deviation_eta ?? 0) * 0.5 +
+    Math.abs(s.deviation_v_std ?? 0) * 0.3 +
+    Math.abs(s.deviation_t_eff ?? 0) * 0.2;
+
+  // Summary stats (deviation 기반)
+  const latestScore     = [...scores].reverse().find((s) => s.deviation_eta != null);
+  const compositeZ      = latestScore ? computeCompositeZ(latestScore) : 0;
+  const stableDays      = scores.filter((s) => computeCompositeZ(s) < 1.0).length;
+  const elevatedDays    = scores.filter((s) => { const z = computeCompositeZ(s); return z >= 1.0 && z < 2.0; }).length;
+  const anomalousDays   = scores.filter((s) => computeCompositeZ(s) >= 2.0).length;
 
   return (
     <div className="space-y-4">
       {/* Summary cards */}
       <div className="grid grid-cols-3 gap-4">
-        {/* Latest health score */}
+        {/* Current Deviation: 최신 composite Z-score 및 상태 */}
         <Card className="border-slate-200">
           <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground mb-1">Current Health Score (Trend-Residual)</p>
-            <div className="flex items-end gap-2">
+            <p className="text-xs text-muted-foreground mb-1">Current Deviation</p>
+            <div className="flex items-center gap-2">
+              {/* 방향 화살표: composite_z 값에 따른 상태 표시 */}
               <span className={`text-2xl font-bold tabular-nums ${
-                getStatusColor(latestScore?.health_status ?? null)
+                compositeZ >= 2.0 ? "text-red-600" :
+                compositeZ >= 1.0 ? "text-yellow-600" : "text-green-600"
               }`}>
-                {latestScore?.health_score?.toFixed(1) ?? "—"}
+                {compositeZ.toFixed(2)}
               </span>
-              <span className="text-xs text-muted-foreground mb-0.5">/ 100</span>
+              <span className="text-xs text-muted-foreground">|Z|</span>
             </div>
-            {latestScore?.health_status && (
-              <Badge
-                variant={getStatusBadgeVariant(latestScore.health_status)}
-                className="text-xs mt-1"
-              >
-                {latestScore.health_status}
-              </Badge>
-            )}
+            <Badge
+              variant={
+                compositeZ >= 2.0 ? "destructive" :
+                compositeZ >= 1.0 ? "secondary" : "default"
+              }
+              className="text-xs mt-1"
+            >
+              {compositeZ >= 2.0 ? "Anomalous" : compositeZ >= 1.0 ? "Elevated" : "Stable"}
+            </Badge>
           </CardContent>
         </Card>
 
-        {/* Algorithm parameter summary */}
+        {/* Baseline Window: 알고리즘 파라미터 요약 */}
         <Card className="border-indigo-200 bg-indigo-50/30 dark:bg-indigo-950/20">
           <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground mb-1">Penalty Structure</p>
+            <p className="text-xs text-muted-foreground mb-1">Baseline Window</p>
             <div className="space-y-1">
               <div className="flex justify-between text-xs">
-                <span>Residual penalty (P_res)</span>
-                <span className="font-mono font-semibold text-yellow-600">≤ 40pt</span>
+                <span>MA baseline window</span>
+                <span className="font-mono font-semibold text-blue-600">30 days</span>
               </div>
               <div className="flex justify-between text-xs">
-                <span>Slope penalty (P_slope)</span>
-                <span className="font-mono font-semibold text-red-600">≤ 60pt</span>
+                <span>σ rolling window</span>
+                <span className="font-mono font-semibold text-indigo-600">90 days</span>
               </div>
               <div className="flex justify-between text-xs">
-                <span>Score floor (SCORE_FLOOR)</span>
-                <span className="font-mono">10pt</span>
+                <span>Anomalous threshold</span>
+                <span className="font-mono text-red-600">|Z| ≥ 2.0</span>
               </div>
             </div>
           </CardContent>
         </Card>
 
-        {/* Days per status */}
+        {/* Deviation Statistics */}
         <Card>
           <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground mb-2">Days by Status</p>
+            <p className="text-xs text-muted-foreground mb-2">Deviation Statistics</p>
             <div className="space-y-1">
               <div className="flex justify-between text-xs">
-                <span className="text-green-600">Normal (≥70)</span>
-                <span className="font-mono">{normalDays} days</span>
+                <span className="text-green-600">Stable (|Z| &lt; 1.0)</span>
+                <span className="font-mono">{stableDays} days</span>
               </div>
               <div className="flex justify-between text-xs">
-                <span className="text-yellow-600">Degrading (40–70)</span>
-                <span className="font-mono">{degradingDays} days</span>
+                <span className="text-yellow-600">Elevated (1.0–2.0)</span>
+                <span className="font-mono">{elevatedDays} days</span>
               </div>
               <div className="flex justify-between text-xs">
-                <span className="text-red-600">Critical (&lt;40)</span>
-                <span className="font-mono font-semibold">{criticalDays} days</span>
+                <span className="text-red-600">Anomalous (≥ 2.0)</span>
+                <span className="font-mono font-semibold">{anomalousDays} days</span>
               </div>
             </div>
           </CardContent>
@@ -368,12 +375,12 @@ function Step2ResultPanel({ result }: { result: Step2bResponse }) {
         {/* Trend dual-panel chart */}
         <Card className="col-span-2">
           <CardHeader className="py-3 px-4">
-            <CardTitle className="text-sm">Trend-Residual Health Score</CardTitle>
+            <CardTitle className="text-sm">Trend Deviation</CardTitle>
             <p className="text-xs text-muted-foreground">
-              <span className="text-indigo-500 font-medium">Top</span>: per-feature score trajectories.{" "}
-              <span className="text-indigo-500 font-medium">Bottom</span>: weighted composite score.{" "}
-              <span className="text-yellow-600 font-medium">Yellow dashed</span> = Degrading (70),{" "}
-              <span className="text-red-500 font-medium">Red dashed</span> = Critical (40, RUL trigger).
+              <span className="text-indigo-500 font-medium">Top</span>: per-feature Z-score deviation (±direction, MA30 baseline).{" "}
+              <span className="text-indigo-500 font-medium">Bottom</span>: Composite |Z| = |η|×0.5 + |v_std|×0.3 + |t_eff|×0.2 (weighted anomaly magnitude).{" "}
+              <span className="text-yellow-600 font-medium">Yellow dashed</span> = Elevated (|Z|≥1.0),{" "}
+              <span className="text-red-500 font-medium">Red dashed</span> = Anomalous (|Z|≥2.0).
               Hover on a date to update the radar chart.
             </p>
           </CardHeader>
@@ -386,15 +393,17 @@ function Step2ResultPanel({ result }: { result: Step2bResponse }) {
         {/* Per-feature score Radar Chart */}
         <Card>
           <CardHeader className="py-3 px-4">
-            <CardTitle className="text-sm">Feature Health Scores</CardTitle>
+            <CardTitle className="text-sm">Trend Deviation Radar</CardTitle>
             <p className="text-xs text-muted-foreground">
               {selectedDate ?? "Hover to select a date"}
-              {selectedPoint && (selectedPoint.health_score ?? 100) >= 70 && (
-                <span className="text-green-600"> (Normal range)</span>
-              )}
-              {selectedPoint && (selectedPoint.health_score ?? 100) < 40 && (
-                <span className="text-red-600"> (Critical — inspect root cause)</span>
-              )}
+              {selectedPoint && (() => {
+                const z = Math.abs(selectedPoint.deviation_eta ?? 0) * 0.5
+                        + Math.abs(selectedPoint.deviation_v_std ?? 0) * 0.3
+                        + Math.abs(selectedPoint.deviation_t_eff ?? 0) * 0.2;
+                if (z < 1.0) return <span className="text-green-600"> (Stable)</span>;
+                if (z >= 2.0) return <span className="text-red-600"> (Anomalous — inspect root cause)</span>;
+                return null;
+              })()}
             </p>
           </CardHeader>
           <CardContent className="h-80 px-2 pb-2">
@@ -441,11 +450,11 @@ export default function Step2Page({ params }: Step2PageProps) {
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="text-sm font-semibold">
-              Step 2. Health Score (Trend-Residual)
+              Step 2. Trend Analysis
             </h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              EWMA(span=7) → MA30 baseline deviation penalty (≤40pt) + slope penalty (≤60pt) →{" "}
-              Health score 10–100. Radar chart for root cause identification.
+              EWMA(span=7) vs MA30 baseline → signed Z-score deviation per feature (η, v_std, t_eff).{" "}
+              Slope overlay shows recent 30-day trend direction. Radar chart for relative deviation comparison.
             </p>
           </div>
           {/* 우측: 실행 버튼 + AI 질문 버튼 */}

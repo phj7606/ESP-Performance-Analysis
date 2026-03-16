@@ -28,7 +28,7 @@ import { useWell } from "@/hooks/useWell";
 import { useStep1Result, useStep3Result } from "@/hooks/useAnalysis";
 import { useWellData } from "@/hooks/useWellData";
 import { isStepComplete } from "@/lib/workflow";
-import type { Step3Response, PillarAlarm, Pillar3Alarm, Step1IndexPoint, EspDataPoint } from "@/lib/api";
+import type { Step3Response, PillarAlarm, Pillar3Alarm, Pillar4Alarm, Step1IndexPoint, EspDataPoint } from "@/lib/api";
 // 챗봇 컴포넌트 및 프롬프트 빌더
 import { ChatbotTrigger } from "@/components/chatbot/ChatbotTrigger";
 import { ChatbotPanel } from "@/components/chatbot/ChatbotPanel";
@@ -131,8 +131,12 @@ function PillarTrendChart({
   const allDates = all.map((p) => p.date);
   const allVals  = all.map((p) => p.val);
 
-  // Recent MK_WINDOW slice — matches the Mann-Kendall test window in the backend
-  const recent      = all.slice(-MK_WINDOW);
+  // 날짜 기준 최근 60일 필터링 (포인트 수가 아닌 실제 날짜 기준)
+  // slice(-MK_WINDOW)는 일별 데이터가 누락된 경우 실제 날짜 범위와 불일치하므로 날짜 연산으로 대체
+  const latestDate  = new Date(all[all.length - 1].date);
+  const cutoffDate  = new Date(latestDate);
+  cutoffDate.setDate(cutoffDate.getDate() - MK_WINDOW);
+  const recent      = all.filter((p) => new Date(p.date) >= cutoffDate);
   const recentDates = recent.map((p) => p.date);
   const recentVals  = recent.map((p) => p.val);
 
@@ -145,66 +149,95 @@ function PillarTrendChart({
   const shapes: Plotly.Shape[] = [];
   const annotations: Plotly.Annotations[] = [];
 
-  // Baseline horizontal line (blue dotted)
-  if (pillar.baseline_val != null) {
-    shapes.push({
-      type: "line", xref: "paper", yref: "y",
-      x0: 0, x1: 1,
-      y0: pillar.baseline_val, y1: pillar.baseline_val,
-      line: { color: "rgba(59,130,246,0.6)", dash: "dot", width: 1.5 },
-    } as Plotly.Shape);
+  // 최근 MK_WINDOW 구간 선형 회귀선 계산
+  // tau는 rank correlation이므로 실제 회귀선이 트렌드 방향을 더 직관적으로 표현
+  let trendLineTrace: Plotly.Data | null = null;
+  if (recent.length >= 10) {
+    const n = recent.length;
+    const xs = recent.map((_, i) => i);
+    const ys = recentVals;
+    const meanX = xs.reduce((s, x) => s + x, 0) / n;
+    const meanY = ys.reduce((s, y) => s + y, 0) / n;
+    const ssXX  = xs.reduce((s, x) => s + (x - meanX) ** 2, 0);
+    const slope = ssXX === 0 ? 0 :
+      xs.reduce((s, x, i) => s + (x - meanX) * (ys[i] - meanY), 0) / ssXX;
+    const intercept = meanY - slope * meanX;
+    // hoverinfo: "skip" 제거 — slope Z, p-value 정보를 트렌드라인 hover에서도 제공
+    trendLineTrace = {
+      x: [recentDates[0], recentDates[n - 1]],
+      y: [intercept, slope * (n - 1) + intercept],
+      type: "scatter", mode: "lines",
+      name: "Trend (60d OLS)",
+      line: { dash: "dot", width: 2, color: accentColor },
+      hovertemplate: [
+        "%{x}",
+        `Trend (60d OLS)`,
+        pillar.tau != null ? `slope Z = ${pillar.tau.toFixed(3)}` : "",
+        pillar.pvalue != null ? `MK p-value = ${pillar.pvalue.toFixed(4)}` : "",
+      ].filter(Boolean).join("<br>") + "<extra></extra>",
+      showlegend: true,
+    } as Plotly.Data;
+  }
+
+  // τ (slope Z-score) annotation — 우상단에 현재 Z-score 표시
+  if (pillar.tau != null) {
+    const tauLabel = direction === "down"
+      ? `slope Z = ${pillar.tau.toFixed(2)} (↓ CRITICAL: ≤ −2.0)`
+      : `slope Z = ${pillar.tau.toFixed(2)} (↑ CRITICAL: ≥ +2.0)`;
+    const tauColor =
+      pillar.status === "critical" ? "rgba(220,53,69,0.9)" :
+      pillar.status === "warning"  ? "rgba(234,88,12,0.9)" :
+                                     "rgba(100,116,139,0.8)";
     annotations.push({
-      x: 0.01, y: pillar.baseline_val,
-      xref: "paper", yref: "y",
-      text: `Baseline: ${pillar.baseline_val.toFixed(4)}`,
+      x: 0.99, y: 0.97,
+      xref: "paper", yref: "paper",
+      text: tauLabel,
       showarrow: false,
-      font: { size: 9, color: "rgba(59,130,246,0.8)" },
-      xanchor: "left", yanchor: "bottom",
+      font: { size: 9, color: tauColor },
+      xanchor: "right", yanchor: "top",
+      bgcolor: "rgba(255,255,255,0.8)",
+      bordercolor: tauColor,
+      borderwidth: 1,
     } as Plotly.Annotations);
   }
 
-  // CRITICAL threshold line (red dotted)
-  if (pillar.threshold != null) {
-    shapes.push({
-      type: "line", xref: "paper", yref: "y",
-      x0: 0, x1: 1,
-      y0: pillar.threshold, y1: pillar.threshold,
-      line: { color: "rgba(220,53,69,0.65)", dash: "dot", width: 1.5 },
-    } as Plotly.Shape);
-    const label = direction === "down"
-      ? `Critical: ${pillar.threshold.toFixed(4)} (−20%)`
-      : `Critical: ${pillar.threshold.toFixed(4)} (+50%)`;
-    annotations.push({
-      x: 0.01, y: pillar.threshold,
-      xref: "paper", yref: "y",
-      text: label,
-      showarrow: false,
-      font: { size: 9, color: "rgba(220,53,69,0.8)" },
-      xanchor: "left",
-      yanchor: direction === "down" ? "top" : "bottom",
-    } as Plotly.Annotations);
-  }
+  // 트렌드라인을 포함한 데이터 배열 구성 (null 필터링)
+  const chartData: Plotly.Data[] = [
+    // 전체 기간 (회색 가는 선) — hover 활성화로 이전 기간 값도 확인 가능
+    // slope Z, p-value 정보를 함께 표시해 과거 구간 값 확인 시 맥락 제공
+    {
+      x: allDates, y: allVals,
+      type: "scatter", mode: "lines",
+      name: "History",
+      line: { color: "rgba(150,150,150,0.4)", width: 1 },
+      hovertemplate: [
+        "%{x}",
+        "%{y:.5f}",
+        `<span style="color:gray">slope Z = ${pillar.tau?.toFixed(3) ?? "—"}, p = ${pillar.pvalue?.toFixed(4) ?? "—"}</span>`,
+      ].join("<br>") + "<extra></extra>",
+    },
+    // 최근 MK_WINDOW 구간 (알람 색상 — MK 테스트 윈도우)
+    // hover 시 slope Z, MK p-value, 상태를 함께 표시해 알람 판단 근거 제공
+    {
+      x: recentDates, y: recentVals,
+      type: "scatter", mode: "lines",
+      name: `MK Window (${MK_WINDOW}d)`,
+      line: { color: accentColor, width: 2 },
+      hovertemplate: [
+        "%{x}",
+        `Value: %{y:.5f}`,
+        pillar.tau != null ? `slope Z = ${pillar.tau.toFixed(3)}` : "",
+        pillar.pvalue != null ? `MK p-value = ${pillar.pvalue.toFixed(4)}` : "",
+        `Status: ${(pillar.status ?? "unknown").toUpperCase()}`,
+      ].filter(Boolean).join("<br>") + "<extra></extra>",
+    },
+    // 회귀 트렌드라인 (최근 60일 선형 회귀 — 점선)
+    ...(trendLineTrace ? [trendLineTrace] : []),
+  ];
 
   return (
     <Plot
-      data={[
-        // Full history (thin gray line — background context)
-        {
-          x: allDates, y: allVals,
-          type: "scatter", mode: "lines",
-          name: "Full History",
-          line: { color: "rgba(150,150,150,0.4)", width: 1 },
-          hoverinfo: "skip",
-        },
-        // Recent MK_WINDOW days (accent color — MK test window)
-        {
-          x: recentDates, y: recentVals,
-          type: "scatter", mode: "lines",
-          name: `Recent ${MK_WINDOW}d (MK window)`,
-          line: { color: accentColor, width: 2 },
-          hovertemplate: "%{x}<br>Value: %{y:.5f}<extra></extra>",
-        },
-      ]}
+      data={chartData}
       layout={{
         xaxis: { type: "date", title: { text: "Date" } },
         yaxis: { title: { text: colKey === "psi_ma30" ? "ψ_ma30" : "v_std_ma30" } },
@@ -212,6 +245,7 @@ function PillarTrendChart({
         annotations,
         margin: { t: 10, r: 20, b: 45, l: 80 },
         legend: { orientation: "h", y: -0.3, x: 0 },
+        hovermode: "x unified",
         autosize: true,
         paper_bgcolor: "transparent",
         plot_bgcolor: "transparent",
@@ -254,6 +288,20 @@ function Pillar1Panel({
         <p className="text-xs text-muted-foreground mt-1">
           Indicator: ψ_ma30 (dimensionless pump head) · Mann-Kendall downward trend test (last 60 days)
         </p>
+        {/* Tau KPI: 방향 화살표 + slope Z-score + p-value 가시성 개선 */}
+        {pillar.tau != null && (
+          <div className={`flex items-center gap-3 mt-2 px-3 py-1.5 rounded text-sm font-medium ${
+            pillar.status === "critical" ? "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400" :
+            pillar.status === "warning"  ? "bg-orange-50 dark:bg-orange-950/30 text-orange-700 dark:text-orange-400" :
+            "bg-slate-50 dark:bg-slate-900 text-slate-600 dark:text-slate-400"
+          }`}>
+            <span className="text-xl">{pillar.tau < 0 ? "↓" : "↑"}</span>
+            <span>slope Z = <span className="font-mono">{pillar.tau.toFixed(3)}</span></span>
+            {pillar.pvalue != null && (
+              <span className="text-xs opacity-80">p = <span className="font-mono">{pillar.pvalue.toFixed(3)}</span></span>
+            )}
+          </div>
+        )}
       </CardHeader>
 
       <CardContent className="px-4 pb-4 space-y-3">
@@ -365,6 +413,20 @@ function Pillar2Panel({
         <p className="text-xs text-muted-foreground mt-1">
           Indicator: v_std_ma30 (dimensionless vibration variance) · Mann-Kendall upward trend test (last 60 days)
         </p>
+        {/* Tau KPI: 방향 화살표 + slope Z-score + p-value 가시성 개선 */}
+        {pillar.tau != null && (
+          <div className={`flex items-center gap-3 mt-2 px-3 py-1.5 rounded text-sm font-medium ${
+            pillar.status === "critical" ? "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400" :
+            pillar.status === "warning"  ? "bg-orange-50 dark:bg-orange-950/30 text-orange-700 dark:text-orange-400" :
+            "bg-slate-50 dark:bg-slate-900 text-slate-600 dark:text-slate-400"
+          }`}>
+            <span className="text-xl">{pillar.tau > 0 ? "↑" : "↓"}</span>
+            <span>slope Z = <span className="font-mono">{pillar.tau.toFixed(3)}</span></span>
+            {pillar.pvalue != null && (
+              <span className="text-xs opacity-80">p = <span className="font-mono">{pillar.pvalue.toFixed(3)}</span></span>
+            )}
+          </div>
+        )}
       </CardHeader>
 
       <CardContent className="px-4 pb-4 space-y-3">
@@ -441,6 +503,192 @@ function Pillar2Panel({
             <p className="text-muted-foreground">Insufficient data — Step 1 analysis required.</p>
           )}
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+
+// ============================================================
+// Pillar 4 모터 온도 차트
+// ============================================================
+
+/**
+ * motor_temp 원시 시계열 차트.
+ * 100 / 130 / 150°C 기준선 포함.
+ */
+function MotorTempChart({
+  espData,
+  pillar,
+}: {
+  espData: EspDataPoint[];
+  pillar: Pillar4Alarm;
+}) {
+  const pts = espData
+    .filter((p) => p.motor_temp != null)
+    .map((p) => ({ date: p.date, val: p.motor_temp as number }));
+
+  if (pts.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
+        No motor_temp data
+      </div>
+    );
+  }
+
+  const accentColor =
+    pillar.status === "critical" ? "rgba(220,53,69,0.85)" :
+    pillar.status === "warning"  ? "rgba(234,88,12,0.85)" :
+                                   "rgba(99,102,241,0.85)";
+
+  return (
+    <Plot
+      data={[{
+        x: pts.map((p) => p.date),
+        y: pts.map((p) => p.val),
+        type: "scatter",
+        mode: "lines",
+        name: "motor_temp (°C)",
+        line: { color: accentColor, width: 1.5 },
+        hovertemplate: "%{x}<br>%{y:.1f} °C<extra></extra>",
+      }]}
+      layout={{
+        xaxis: { type: "date", title: { text: "Date" } },
+        yaxis: { title: { text: "Motor Temperature (°C)" } },
+        shapes: [
+          // 100°C 기준선 (회색 참고선)
+          {
+            type: "line", xref: "paper", yref: "y",
+            x0: 0, x1: 1, y0: 100, y1: 100,
+            line: { color: "rgba(156,163,175,0.5)", dash: "dot", width: 1 },
+          } as Plotly.Shape,
+          // WARNING 선 130°C
+          {
+            type: "line", xref: "paper", yref: "y",
+            x0: 0, x1: 1, y0: 130, y1: 130,
+            line: { color: "rgba(234,88,12,0.6)", dash: "dot", width: 1.5 },
+          } as Plotly.Shape,
+          // CRITICAL 선 150°C
+          {
+            type: "line", xref: "paper", yref: "y",
+            x0: 0, x1: 1, y0: 150, y1: 150,
+            line: { color: "rgba(220,53,69,0.65)", dash: "dot", width: 1.5 },
+          } as Plotly.Shape,
+        ],
+        annotations: [
+          {
+            x: 0.01, y: 130, xref: "paper", yref: "y",
+            text: "WARNING: 130°C",
+            showarrow: false,
+            font: { size: 9, color: "rgba(234,88,12,0.8)" },
+            xanchor: "left", yanchor: "bottom",
+          } as Plotly.Annotations,
+          {
+            x: 0.01, y: 150, xref: "paper", yref: "y",
+            text: "CRITICAL: 150°C",
+            showarrow: false,
+            font: { size: 9, color: "rgba(220,53,69,0.8)" },
+            xanchor: "left", yanchor: "bottom",
+          } as Plotly.Annotations,
+        ],
+        margin: { t: 10, r: 20, b: 45, l: 80 },
+        autosize: true,
+        paper_bgcolor: "transparent",
+        plot_bgcolor: "transparent",
+        font: { size: 10 },
+      }}
+      config={{ responsive: true, displayModeBar: false }}
+      style={{ width: "100%", height: "100%" }}
+      useResizeHandler
+    />
+  );
+}
+
+
+// ============================================================
+// Pillar 4 panel: Thermal (Motor Temperature)
+// ============================================================
+
+function Pillar4Panel({ pillar, espData }: { pillar: Pillar4Alarm; espData: EspDataPoint[] }) {
+  const borderColor =
+    pillar.status === "critical" ? "border-red-300" :
+    pillar.status === "warning"  ? "border-orange-300" :
+    pillar.status === "normal"   ? "border-green-300" : "border-gray-200";
+
+  return (
+    <Card className={`${borderColor} border-2`}>
+      <CardHeader className="py-3 px-4 pb-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {/* 온도 아이콘 — Thermometer 대신 AlertTriangle 재활용 */}
+            <span className="text-red-400 font-bold text-sm">🌡</span>
+            <CardTitle className="text-sm">Pillar 4 — Thermal (Motor Temperature)</CardTitle>
+          </div>
+          {!pillar.data_available ? (
+            <Badge variant="outline" className="gap-1 border-gray-400 text-gray-500">
+              <HelpCircle className="h-3 w-3" />
+              No Data
+            </Badge>
+          ) : (
+            <AlarmBadge status={pillar.status} />
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground mt-1">
+          Indicator: motor_temp (°C) · 7-day rolling median · WARNING ≥ 130°C / CRITICAL ≥ 150°C
+        </p>
+      </CardHeader>
+
+      <CardContent className="px-4 pb-4">
+        {!pillar.data_available ? (
+          <div className="text-sm text-muted-foreground py-2">
+            No motor_temp data available. This well may not have a motor temperature sensor installed.
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground text-xs">7-day Median (°C)</span>
+                <span className={`font-mono font-semibold ${
+                  pillar.status === "critical" ? "text-red-600" :
+                  pillar.status === "warning"  ? "text-orange-600" : "text-foreground"
+                }`}>
+                  {pillar.current_val != null ? `${pillar.current_val.toFixed(1)} °C` : "—"}
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground text-xs">WARNING threshold</span>
+                <span className="font-mono text-orange-600">≥ 130°C</span>
+              </div>
+              <div className="flex justify-between items-center col-start-2">
+                <span className="text-muted-foreground text-xs">CRITICAL threshold</span>
+                <span className="font-mono text-red-600">≥ 150°C</span>
+              </div>
+            </div>
+
+            {/* Time-series chart */}
+            <div className="h-52 border rounded bg-background/50 mt-3">
+              <MotorTempChart espData={espData} pillar={pillar} />
+            </div>
+
+            <div className="mt-3 pt-3 border-t border-dashed text-xs">
+              {pillar.status === "critical" && (
+                <p className="text-red-700 dark:text-red-400">
+                  Motor temperature exceeds 150°C. Severe thermal stress detected — immediate shutdown and inspection required.
+                </p>
+              )}
+              {pillar.status === "warning" && (
+                <p className="text-orange-700 dark:text-orange-400">
+                  Motor temperature exceeds 130°C. Elevated thermal load — enhanced monitoring and cooling check recommended.
+                </p>
+              )}
+              {pillar.status === "normal" && (
+                <p className="text-green-700 dark:text-green-400">
+                  Motor temperature within normal range (below 130°C).
+                </p>
+              )}
+            </div>
+          </>
+        )}
       </CardContent>
     </Card>
   );
@@ -652,13 +900,16 @@ function Step3ResultPanel({
   indices: Step1IndexPoint[];
   espData: EspDataPoint[];
 }) {
-  const statuses = [result.pillar1.status, result.pillar2.status, result.pillar3.status];
+  // pillar4가 없는 구버전 응답 호환성 처리
+  const pillar4 = result.pillar4 ?? { status: "unknown", current_val: null, data_available: false };
+
+  const statuses = [result.pillar1.status, result.pillar2.status, result.pillar3.status, pillar4.status];
   const overallStatus =
     statuses.includes("critical") ? "critical" :
     statuses.includes("warning")  ? "warning"  :
     statuses.every((s) => s === "normal") ? "normal" : "unknown";
 
-  const pillarLabels = ["P1 Hydraulic", "P2 Mechanical", "P3 Electrical"];
+  const pillarLabels = ["P1 Hydraulic", "P2 Mechanical", "P3 Electrical", "P4 Thermal"];
 
   return (
     <div className="space-y-4">
@@ -675,7 +926,7 @@ function Step3ResultPanel({
               <span className="text-xs font-semibold text-muted-foreground">Overall Alarm Status</span>
               <AlarmBadge status={overallStatus} />
             </div>
-            <div className="flex gap-3">
+            <div className="flex gap-3 flex-wrap">
               {[result.pillar1, result.pillar2].map((p, i) => (
                 <span key={i} className="text-xs">
                   <span className="text-muted-foreground">{pillarLabels[i]}: </span>
@@ -699,15 +950,27 @@ function Step3ResultPanel({
                     result.pillar3.status?.toUpperCase() ?? "UNKNOWN"}
                 </span>
               </span>
+              <span className="text-xs">
+                <span className="text-muted-foreground">{pillarLabels[3]}: </span>
+                <span className={
+                  pillar4.status === "critical" ? "text-red-600 font-semibold" :
+                  pillar4.status === "warning"  ? "text-orange-600 font-semibold" :
+                  pillar4.status === "normal"   ? "text-green-600" : "text-muted-foreground"
+                }>
+                  {!pillar4.data_available ? "N/A" :
+                    pillar4.status?.toUpperCase() ?? "UNKNOWN"}
+                </span>
+              </span>
             </div>
           </div>
         </CardContent>
       </Card>
 
-      {/* 3 Pillar panels (P1 and P2 include time-series charts) */}
+      {/* 4 Pillar panels (P1/P2 include time-series charts) */}
       <Pillar1Panel pillar={result.pillar1} indices={indices} />
       <Pillar2Panel pillar={result.pillar2} indices={indices} />
       <Pillar3Panel pillar={result.pillar3} espData={espData} />
+      <Pillar4Panel pillar={pillar4} espData={espData} />
 
       <div className="flex justify-end">
         <p className="text-xs text-muted-foreground">
@@ -744,12 +1007,12 @@ export default function Step3Page({ params }: Step3PageProps) {
   const indices = step1Data?.indices ?? [];
   const espData = wellData?.data ?? [];
 
-  // 전체 알람 상태 계산 — CRITICAL 시 ChatbotTrigger에 빨간 배지 표시
+  // 전체 알람 상태 계산 (P1~P4 포함) — CRITICAL 시 ChatbotTrigger에 빨간 배지 표시
   const overallAlarmStatus = result
     ? (
-        [result.pillar1.status, result.pillar2.status, result.pillar3.status].includes("critical")
+        [result.pillar1.status, result.pillar2.status, result.pillar3.status, result.pillar4?.status].includes("critical")
           ? "CRITICAL"
-          : [result.pillar1.status, result.pillar2.status, result.pillar3.status].includes("warning")
+          : [result.pillar1.status, result.pillar2.status, result.pillar3.status, result.pillar4?.status].includes("warning")
             ? "WARNING"
             : "NORMAL"
       )

@@ -40,7 +40,8 @@ async def list_wells(db: AsyncSession = Depends(get_db)):
     Retrieve the full list of wells.
     Includes data count and date range for each well via subquery.
     """
-    result = await db.execute(select(Well).order_by(Well.created_at.desc()))
+    # sheet_order: 엑셀 시트 순서 기준 정렬 → name 오름차순으로 보조 정렬
+    result = await db.execute(select(Well).order_by(Well.sheet_order.asc(), Well.name.asc()))
     wells = result.scalars().all()
 
     well_responses = []

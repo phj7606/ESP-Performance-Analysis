@@ -57,7 +57,7 @@ const STORAGE_KEY = "chatbot_api_key";
 // 스토어 생성
 // ============================================================
 
-export const useChatbotStore = create<ChatbotStore>((set, get) => ({
+export const useChatbotStore = create<ChatbotStore>((set) => ({
   // ── 초기화: SSR 안전 가드로 localStorage에서 API 키 복원 ──
   apiKey:
     typeof window !== "undefined"

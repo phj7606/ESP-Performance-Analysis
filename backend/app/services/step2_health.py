@@ -271,11 +271,45 @@ async def run_step2_analysis(
     result_df = _run_rolling_gmm(log_df, min_window=30, max_window=60)
 
     # ── 5. training_start / training_end 계산 ────────────────
-    # "현재 참조 기준 창"을 차트에 표시: 마지막 날짜 기준 T_max-60 ~ T_max
+    # "끓는 물 속의 개구리" 버그 수정: 전체 누적 평균 대신 초기 안정 구간만 사용.
+    # ESP 물리: 설치 → run-in 후 peak 성능 → 단방향 비가역 저하.
+    # 따라서 베이스라인은 "설치 초기 건강 구간"으로 1회 고정해야 함.
     T_max = log_df.index.max()
     T_min = log_df.index.min()
-    training_end   = T_max
-    training_start = max(T_min, T_max - pd.Timedelta(days=60))
+    training_start = T_min  # 데이터 시작일 (초기 anchor 구간부터)
+
+    # eta_proxy(EWMA 스무딩 후)로 7일 롤링 CV 계산 → 초기 안정 구간 종료 시점 탐지
+    # ψ_ma30 대신 eta_proxy 사용: step2 로드 데이터로 처리 가능하며 유압 성능 대표
+    anchor_series = smoothed_df["eta_proxy"].dropna()
+
+    if len(anchor_series) >= 3:
+        # 초기 30일(부족 시 전체) CV를 기준선으로 설정
+        n_init = min(30, len(anchor_series))
+        initial_cv = anchor_series.iloc[:n_init].std() / (
+            anchor_series.iloc[:n_init].mean() + 1e-9
+        )
+        # 극도로 안정적인 Well 방어: CV ≈ 0이면 최솟값 0.03 적용 (SPC 표준)
+        initial_cv = max(initial_cv, 0.03)
+
+        rolling_cv = (
+            anchor_series.rolling(window=7, min_periods=3).std()
+            / (anchor_series.rolling(window=7, min_periods=3).mean() + 1e-9)
+        )
+        # CV가 초기 안정 수준의 2.0배를 처음 초과하는 날 = 저하 시작 신호
+        signal = rolling_cv[rolling_cv > initial_cv * 2.0]
+
+        if not signal.empty and (signal.index[0] - T_min).days >= 30:
+            # 신호 직전일까지를 안정 구간으로 확정
+            training_end = signal.index[0] - pd.Timedelta(days=1)
+        else:
+            # 신호 없음(신규 Well) 또는 안정 구간이 너무 짧으면 → 전체 기간 healthy
+            training_end = T_max
+    else:
+        training_end = T_max
+
+    # 안정 구간이 30일 미만이면 T_max로 폴백 (데이터 부족)
+    if (training_end - training_start).days < 30:
+        training_end = T_max
 
     def _classify(score: float) -> str:
         """건강 점수 → 상태 문자열."""
@@ -415,32 +449,26 @@ _TR_MA_WINDOW         = 30   # MA30 기준선 창
 _TR_SIGMA_WINDOW      = 90   # 잔차 σ 계산 창 (90일 rolling, 초기는 expanding)
 _TR_SIGMA_MIN_PERIODS = 10   # MA30 / σ 최소 데이터 수 (미만 → NaN)
 
-# 이탈 감점: P_RES_MAX=40 → 스파이크 단독으로는 Critical(40점) 미진입
-P_RES_MAX   = 40
-# 기울기 감점: P_SLOPE_MAX=60 → 점진적 저하가 핵심 탐지 대상, Prophet 단조성 향상
-P_SLOPE_MAX = 60
+# 이탈 감점: P_RES_MAX=90 → deviation 단독으로 Critical(40점) 진입 가능
+# 추세(slope) 감점 제거 이유: Step 3(Prophet)가 장기 추세를 전담하므로 중복 불필요
+# z_coeff를 ×2.25 비례 조정 → 기존 5σ 기준점(포화 시점) 유지
+P_RES_MAX   = 90
 # 점수 하한: Prophet 외삽 시 0점 수렴으로 인한 changepoint 역추정 오류 방지
 SCORE_FLOOR = 10
 
-# 피처별 차등 계수 (방향: +1=감소 악화, -1=증가 악화)
+# 피처별 차등 계수 (방향성 제거 — 순수 이탈 크기만 측정)
 _TR_FEATURE_PARAMS: dict[str, dict] = {
     "eta_proxy": {
-        "weight":      0.50,   # 효율 종합지표 (가장 포괄적)
-        "z_coeff":     8,      # 현행 유지
-        "slope_coeff": 20,
-        "direction":   +1,     # 감소 = 악화
+        "weight":  0.50,   # 효율 종합지표 (가장 포괄적)
+        "z_coeff": 18,     # 8 × 2.25: 5σ에서 P_RES_MAX 포화
     },
     "v_std": {
-        "weight":      0.30,   # 베어링/기계 선행 지표
-        "z_coeff":     12,     # 8→12: 진동 급등 즉각 반응 (베어링 손상 선행 신호)
-        "slope_coeff": 20,
-        "direction":   -1,     # 증가 = 악화
+        "weight":  0.30,   # 베어링/기계 선행 지표
+        "z_coeff": 27,     # 12 × 2.25: 진동 급등 즉각 반응
     },
     "t_eff": {
-        "weight":      0.20,   # 열효율 후행 지표
-        "z_coeff":     6,      # 8→6: 온도 스파이크 노이즈 완화
-        "slope_coeff": 25,     # 20→25: 온도 장기 트렌드 강조
-        "direction":   -1,     # 증가 = 악화
+        "weight":  0.20,   # 열효율 후행 지표
+        "z_coeff": 14,     # 6 × 2.25 ≈ 13.5 → 14: 온도 스파이크 노이즈 완화
     },
 }
 
@@ -454,16 +482,16 @@ def _compute_trend_residual_score(
     feature_name: str,
 ) -> pd.Series:
     """
-    단일 피처에 대한 Trend-Residual 건강 점수 계산.
+    단일 피처에 대한 Deviation Composite 건강 점수 계산.
 
     산출 절차:
     1. MA30 기준선: 30일 이동평균 (min_periods=10 미만 → NaN)
     2. σ: expanding(초기) → rolling 90일 전환, 하한=전형값의 2%
-    3. P_res = clip(|residual/σ| × z_coeff, 0, P_RES_MAX=40)
-       → 스파이크 단독 max 40점 감점 → 점수 60점 (Critical 미달)
-    4. P_slope = clip(slope_norm × slope_coeff, 0, P_SLOPE_MAX=60)
-       → 장기 하락 max 60점 감점 → 점수 40점 (Critical 경계 진입)
-    5. score = clip(100 - P_res - P_slope, SCORE_FLOOR=10, 100)
+    3. P_res = clip(|residual/σ| × z_coeff, 0, P_RES_MAX=90)
+       → 5σ 이탈 시 포화 (Critical 진입 가능)
+    4. score = clip(100 - P_res, SCORE_FLOOR=10, 100)
+
+    slope 감점 제거 이유: Step 3(Prophet)가 장기 추세를 전담하므로 중복 불필요.
 
     Args:
         series: EWMA 스무딩된 단일 피처 시계열 (날짜 인덱스)
@@ -487,27 +515,67 @@ def _compute_trend_residual_score(
     sigma_floor = series.expanding().median().abs() * 0.02
     sigma = sigma_raw.clip(lower=sigma_floor.clip(lower=1e-8))
 
-    # P_res: 이탈 감점 (스파이크 단독으로는 40점 한계)
+    # P_res: 이탈 감점 (5σ에서 P_RES_MAX=90 포화 → Critical 진입 가능)
     z_score = residual.abs() / sigma
     p_res   = (z_score * params["z_coeff"]).clip(upper=P_RES_MAX).fillna(0)
 
-    # P_slope: 정규화된 기울기 감점 (점진적 저하 탐지 핵심)
-    ma30_diff      = ma30.diff()
-    # 기울기 기준선: MA30 변화량의 90일 rolling std (안정 구간 변동폭 기준)
-    slope_baseline = ma30_diff.rolling(_TR_SIGMA_WINDOW, min_periods=30).std(ddof=1).clip(lower=1e-8)
-    # 최근 30일 MA30의 선형 기울기 (polyfit 1차 계수)
+    return (100 - p_res).clip(SCORE_FLOOR, 100)
+
+
+def _compute_slope_norm(series: pd.Series) -> pd.Series:
+    """
+    MA30 기울기의 Z-score 정규화 (slope_z, 동종 비교).
+
+    slope_30d: MA30의 최근 30일 선형회귀 기울기 [피처/day]
+    slope_baseline: slope_30d 자체의 90일 rolling std [피처/day]
+      → 분자·분모가 같은 단위이므로 ±2σ 해석이 의미 있음
+    반환값 = slope_30d / rolling_90d_std(slope_30d) (부호 포함)
+      - 양수 = 상승 트렌드 (v_std 상승 = 기계 악화, η 상승 = 효율 개선)
+      - 음수 = 하락 트렌드 (η 하락 = 효율 악화, v_std 하락 = 진동 개선)
+      - 크기 ~1.0 = 보통 추세, ~2.0 이상 = 강한 추세
+    """
+    ma30 = series.rolling(window=_TR_MA_WINDOW, min_periods=_TR_SIGMA_MIN_PERIODS).mean()
+    # 30일 선형 기울기 먼저 계산
     slope_30 = ma30.rolling(_TR_MA_WINDOW, min_periods=_TR_SIGMA_MIN_PERIODS).apply(
         lambda y: np.polyfit(np.arange(len(y)), y, 1)[0], raw=True
     )
-    # direction=+1: 감소가 나쁨(eta_proxy), direction=-1: 증가가 나쁨(v_std, t_eff)
-    degrading_slope = params["direction"] * slope_30
-    # fillna(0): 워밍업 구간(초기 30일 미만)에서 slope_norm이 NaN일 때
-    # 0으로 대체하여 P_slope 감점 없음 처리 — 스펙 의사코드 미기재이나 의도적 구현
-    # (slope_baseline도 초기 구간에서 NaN 가능 → 0 처리로 false alarm 방지)
-    slope_norm      = (degrading_slope / slope_baseline).fillna(0)
-    p_slope = slope_norm.clip(lower=0).mul(params["slope_coeff"]).clip(upper=P_SLOPE_MAX)
+    # 기울기 자체의 90일 rolling std → 동종(피처/day) 비교로 ±2σ 의미 보장
+    slope_baseline = (
+        slope_30.rolling(_TR_SIGMA_WINDOW, min_periods=30)
+        .std(ddof=1)
+        .clip(lower=1e-8)
+    )
+    return (slope_30 / slope_baseline).fillna(0)
 
-    return (100 - p_res - p_slope).clip(SCORE_FLOOR, 100)
+
+def _compute_deviation_zscore(
+    series: pd.Series,
+) -> pd.Series:
+    """
+    단일 피처에 대한 방향성 Z-score 편차 계산 (부호 포함).
+
+    편차 = (EWMA - MA30) / σ
+    양수 = MA30 대비 상승, 음수 = MA30 대비 하락.
+    """
+    # MA30 기준선
+    ma30 = series.rolling(window=_TR_MA_WINDOW, min_periods=_TR_SIGMA_MIN_PERIODS).mean()
+
+    # 잔차 (부호 포함)
+    residual = series - ma30
+
+    # σ: expanding → rolling 전환
+    sigma_exp = residual.expanding(min_periods=_TR_SIGMA_MIN_PERIODS).std(ddof=1)
+    sigma_rol = residual.rolling(_TR_SIGMA_WINDOW, min_periods=_TR_SIGMA_MIN_PERIODS).std(ddof=1)
+    sigma_raw = sigma_rol.where(sigma_rol.notna(), sigma_exp)
+
+    # σ 하한: 극안정 구간 Z 폭발 방지
+    sigma_floor = series.expanding().median().abs() * 0.02
+    sigma = sigma_raw.clip(lower=sigma_floor.clip(lower=1e-8))
+
+    # 방향성 Z-score (`.abs()` 없이 부호 유지)
+    deviation = residual / sigma
+
+    return deviation.fillna(0)
 
 
 # ============================================================
@@ -522,9 +590,8 @@ async def run_step2b_analysis(well_id: str, db: AsyncSession) -> dict:
     Step 1 residual_data(eta_proxy, v_std, t_eff)를 기반으로 MA30 추세-잔차 분리 방식으로 건강 점수 산출.
 
     감점 구조 설계 의도:
-      스파이크 단독: max P_RES_MAX(40)점 감점 → 점수 60점 (Warning, Critical 미달)
-      장기 하락 단독: max P_SLOPE_MAX(60)점 감점 → 점수 40점 (Critical 경계 진입)
-      두 가지 동시: 최악 0점 → clip(SCORE_FLOOR=10, 100) 적용
+      Deviation Composite: P_RES_MAX=90 → 5σ 이탈 시 포화, Critical(40점) 진입 가능
+      slope 감점 없음: 장기 추세는 Step 3(Prophet)가 전담
 
     Returns:
         {"rows_written": int}
@@ -539,10 +606,20 @@ async def run_step2b_analysis(well_id: str, db: AsyncSession) -> dict:
     # ── 2. EWMA 스무딩 (기존 _apply_ewma 재활용) ──────────────
     smoothed = _apply_ewma(df, span=7)
 
-    # ── 3. 피처별 개별 점수 계산 ──────────────────────────────
+    # ── 3. 피처별 개별 점수 + 방향성 Z-score 편차 계산 ───────
     score_eta = _compute_trend_residual_score(smoothed["eta_proxy"], "eta_proxy")
     score_v   = _compute_trend_residual_score(smoothed["v_std"],     "v_std")
     score_t   = _compute_trend_residual_score(smoothed["t_eff"],     "t_eff")
+
+    # 방향성 편차 (부호 포함 Z-score): 양수=상승, 음수=하락
+    dev_eta = _compute_deviation_zscore(smoothed["eta_proxy"])
+    dev_v   = _compute_deviation_zscore(smoothed["v_std"])
+    dev_t   = _compute_deviation_zscore(smoothed["t_eff"])
+
+    # MA30 기울기 정규화 이탈도 (부호 포함): slope_30 / slope_baseline
+    slope_norm_eta = _compute_slope_norm(smoothed["eta_proxy"])
+    slope_norm_v   = _compute_slope_norm(smoothed["v_std"])
+    slope_norm_t   = _compute_slope_norm(smoothed["t_eff"])
 
     # ── 4. 가중 평균 결합 ──────────────────────────────────────
     weighted = (
@@ -573,28 +650,58 @@ async def run_step2b_analysis(well_id: str, db: AsyncSession) -> dict:
     rows_to_insert = []
     for date_ts in score_final.index:
         s = _safe_float(score_final.loc[date_ts])
+
+        # composite_z: 최신 날짜 기준 대시보드 상태 판별용
+        d_eta = _safe_float(dev_eta.loc[date_ts])
+        d_v   = _safe_float(dev_v.loc[date_ts])
+        d_t   = _safe_float(dev_t.loc[date_ts])
+
+        # deviation 기반 상태 분류 (composite |Z| 기준)
+        composite_z = (
+            abs(d_eta or 0) * 0.5 +
+            abs(d_v   or 0) * 0.3 +
+            abs(d_t   or 0) * 0.2
+        )
+        dev_status = (
+            "Anomalous" if composite_z >= 2.0 else
+            "Elevated"  if composite_z >= 1.0 else
+            "Stable"
+        )
+
         rows_to_insert.append(
             TrendResidualScore(
                 well_id       = uuid.UUID(well_id),
                 date          = date_ts.date(),
-                health_score  = s,
-                health_status = _classify(s) if s is not None else None,
+                health_score  = s,              # 하위 호환 유지
+                health_status = dev_status,     # deviation 기반 상태
                 score_eta     = _safe_float(score_eta.loc[date_ts]),
                 score_v_std   = _safe_float(score_v.loc[date_ts]),
                 score_t_eff   = _safe_float(score_t.loc[date_ts]),
+                deviation_eta   = d_eta,
+                deviation_v_std = d_v,
+                deviation_t_eff = d_t,
+                slope_norm_eta   = _safe_float(slope_norm_eta.loc[date_ts]),
+                slope_norm_v_std = _safe_float(slope_norm_v.loc[date_ts]),
+                slope_norm_t_eff = _safe_float(slope_norm_t.loc[date_ts]),
             )
         )
 
     db.add_all(rows_to_insert)
 
-    # ── 6. Well latest_health_score 업데이트 (기본 Step 2로 전환됨) ──────
-    # Trend-Residual이 기본 건강 점수 소스 → 대시보드 표시용 최신 점수 반영
-    valid_rows = [r for r in rows_to_insert if r.health_score is not None]
+    # ── 6. Well latest_health_score 업데이트 (최신 composite_z 값으로) ──────
+    # deviation 기반 composite_z를 latest_health_score에 저장 (대시보드 상태 판별용)
+    valid_rows = [r for r in rows_to_insert if r.deviation_eta is not None]
     if valid_rows:
+        last_row = valid_rows[-1]
+        composite_z_latest = (
+            abs(last_row.deviation_eta   or 0) * 0.5 +
+            abs(last_row.deviation_v_std or 0) * 0.3 +
+            abs(last_row.deviation_t_eff or 0) * 0.2
+        )
         well_result = await db.execute(select(Well).where(Well.id == uuid.UUID(well_id)))
         well = well_result.scalar_one_or_none()
         if well:
-            well.latest_health_score = valid_rows[-1].health_score
+            well.latest_health_score = composite_z_latest
 
     # ── 7. Well 분석 상태 → health_done (기본 Step 2로 전환됨) ──────────
     # Trend-Residual이 health_done을 설정 → Step 3(RUL 예측) 실행 가능
@@ -621,12 +728,18 @@ async def get_step2b_result(well_id: str, db: AsyncSession) -> dict:
 
     scores_list = [
         {
-            "date":          str(row.date),
-            "health_score":  row.health_score,
-            "health_status": row.health_status,
-            "score_eta":     row.score_eta,
-            "score_v_std":   row.score_v_std,
-            "score_t_eff":   row.score_t_eff,
+            "date":           str(row.date),
+            "health_score":   row.health_score,
+            "health_status":  row.health_status,
+            "score_eta":      row.score_eta,
+            "score_v_std":    row.score_v_std,
+            "score_t_eff":    row.score_t_eff,
+            "deviation_eta":   row.deviation_eta,
+            "deviation_v_std": row.deviation_v_std,
+            "deviation_t_eff": row.deviation_t_eff,
+            "slope_norm_eta":   row.slope_norm_eta,
+            "slope_norm_v_std": row.slope_norm_v_std,
+            "slope_norm_t_eff": row.slope_norm_t_eff,
         }
         for row in rows
     ]

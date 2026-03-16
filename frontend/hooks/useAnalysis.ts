@@ -12,7 +12,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  runStep1, runStep2, runStep2b, runStep3,
+  runStep1, runStep2, runStep3,
   getStep1Result, getStep2Result, getStep2bResult, getStep3Result,
 } from "@/lib/api";
 import type { Step1Response, Step2Response, Step2bResponse, Step3Response } from "@/lib/api";

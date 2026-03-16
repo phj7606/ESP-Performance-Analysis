@@ -374,6 +374,7 @@ async def get_step3(
         pillar1=data["pillar1"],
         pillar2=data["pillar2"],
         pillar3=data["pillar3"],
+        pillar4=data.get("pillar4"),
     )
 
 

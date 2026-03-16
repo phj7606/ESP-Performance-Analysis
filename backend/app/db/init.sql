@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS wells (
             'health_done',
             'fully_analyzed'
         )),
+    -- 엑셀 시트 순서: 업로드 시 시트 인덱스를 저장하여 Home 화면 정렬에 사용
+    sheet_order INTEGER DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );

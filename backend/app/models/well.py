@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Optional
 import uuid
 
-from sqlalchemy import String, Float, DateTime, func
+from sqlalchemy import String, Float, DateTime, Integer, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -23,6 +23,8 @@ class Well(Base):
     analysis_status: Mapped[str] = mapped_column(
         String(50), nullable=False, default="no_data"
     )
+    # 엑셀 시트 순서 — 업로드 시 시트 인덱스를 저장, Home 화면 정렬 기준
+    sheet_order: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

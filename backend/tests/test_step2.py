@@ -42,7 +42,7 @@ from app.services.step1_diagnosis import (
 )
 from app.services.step2_health import (
     FIXED_FEATURES, _apply_ewma, _run_rolling_gmm, _ll_to_score_piecewise,
-    _compute_trend_residual_score, P_RES_MAX, P_SLOPE_MAX, SCORE_FLOOR,
+    _compute_trend_residual_score, P_RES_MAX, SCORE_FLOOR,
 )
 
 

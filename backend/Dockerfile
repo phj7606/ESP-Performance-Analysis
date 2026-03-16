@@ -18,3 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 EXPOSE 8000
+
+# Railway/프로덕션 환경 기본 실행 명령.
+# docker-compose.yml에서 command:를 지정하면 이 CMD는 무시됨 (로컬 개발 호환).
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

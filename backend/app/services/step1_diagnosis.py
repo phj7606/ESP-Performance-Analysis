@@ -310,8 +310,8 @@ async def get_step1_result(well_id: str, db: AsyncSession) -> dict:
     """
     DB에 저장된 Step 1 결과를 조회하여 API 응답 형식으로 반환.
 
-    Step 2가 완료되었으면 baseline_periods 정보로 is_training 마킹.
-    아직 Step 2 미완료라면 모든 포인트를 is_training=False로 반환.
+    모든 포인트를 is_training=False로 반환 (Step 1은 training 구간 개념 없음).
+    baseline_periods는 Step 2 내부에서만 사용하며 Step 1 UI에는 표시하지 않음.
     """
     stmt = (
         select(ResidualData)
@@ -324,17 +324,12 @@ async def get_step1_result(well_id: str, db: AsyncSession) -> dict:
     if not rows:
         raise ValueError("No Step 1 diagnosis data found. Please run the analysis first.")
 
-    # Step 2 완료 여부 확인: baseline_periods에 기록 있으면 is_training 마킹
-    baseline = await _load_baseline(well_id, db)
-
     session_params = await _load_session_parameters(well_id, db)
 
     indices_list = []
     for row in rows:
-        # Step 2 완료 후에는 학습 구간 표시
+        # Step 1은 training 구간 표시 없음 — 항상 False
         is_training = False
-        if baseline and baseline.start_date and baseline.end_date:
-            is_training = baseline.start_date <= row.date <= baseline.end_date
 
         indices_list.append({
             "date":           str(row.date),

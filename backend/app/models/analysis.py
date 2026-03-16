@@ -149,6 +149,14 @@ class TrendResidualScore(Base):
     score_eta:   Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # η_proxy
     score_v_std: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # 진동
     score_t_eff: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # 냉각
+    # 방향성 Z-score 편차 (MA30 대비, 부호 포함 — Trend Analysis 알고리즘 전환)
+    deviation_eta:   Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # η_proxy Z-score
+    deviation_v_std: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # 진동 Z-score
+    deviation_t_eff: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # 냉각 Z-score
+    # MA30 기울기 정규화 이탈도 (부호 포함: 양수=상승, 음수=하락)
+    slope_norm_eta:   Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # η_proxy MA30 기울기
+    slope_norm_v_std: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # v_std MA30 기울기
+    slope_norm_t_eff: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # t_eff MA30 기울기
 
 
 class PillarResult(Base):
@@ -184,3 +192,8 @@ class PillarResult(Base):
     p3_current_val:    Mapped[Optional[float]] = mapped_column(Float)      # 최근 이동 중앙값 (μA)
     p3_days_exceeded:  Mapped[Optional[int]]   = mapped_column(Integer)    # 임계치 초과 연속 일수
     p3_data_available: Mapped[Optional[bool]]  = mapped_column(Boolean)
+
+    # Pillar 4: 모터 온도 (Thermal) — motor_temp 7일 이동 중앙값
+    p4_status:         Mapped[Optional[str]]   = mapped_column(String(20))  # normal/warning/critical/unknown
+    p4_current_val:    Mapped[Optional[float]] = mapped_column(Float)       # 7일 이동 중앙값 (°C)
+    p4_data_available: Mapped[Optional[bool]]  = mapped_column(Boolean)

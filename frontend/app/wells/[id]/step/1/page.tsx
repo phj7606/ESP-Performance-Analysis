@@ -57,18 +57,21 @@ interface Step1PageProps {
  * 4개 무차원 성능 지수 시계열 + 30일 MA 서브플롯 (2×2 격자).
  *
  * 색상 규칙:
- *   파란 점  = 학습 구간 (Step 2 완료 후 표시)
- *   회색 점  = 나머지 기간
+ *   회색 점  = 원시 지수 값
  *   주황 선  = 30일 이동 평균
- *   파란 배경 = 학습 구간 (Step 2 완료 후)
  */
-function IndicesSubplotChart({ result }: { result: Step1Response }) {
+function IndicesSubplotChart({
+  result,
+  trainingStart,
+  trainingEnd,
+}: {
+  result: Step1Response;
+  trainingStart?: string | null;
+  trainingEnd?: string | null;
+}) {
   const indices = result.indices;
-  const hasTraining = indices.some((r) => r.is_training);
 
-  const dates      = indices.map((r) => r.date);
-  const trainDates = indices.filter((r) => r.is_training).map((r) => r.date);
-  const otherDates = indices.filter((r) => !r.is_training).map((r) => r.date);
+  const dates = indices.map((r) => r.date);
 
   const indexInfo = [
     { key: "cp",    ma: "cp_ma30",    label: "Cp (Power)",      unit: "kW/Hz³",     row: 1, col: 1 },
@@ -84,24 +87,12 @@ function IndicesSubplotChart({ result }: { result: Step1Response }) {
     const xAxis   = axisIdx === 1 ? "x"  : `x${axisIdx}`;
     const yAxis   = axisIdx === 1 ? "y"  : `y${axisIdx}`;
 
-    const trainVals = indices.filter((r) => r.is_training).map((r) => r[info.key]);
-    const otherVals = indices.filter((r) => !r.is_training).map((r) => r[info.key]);
-    const allMa30   = indices.map((r) => r[info.ma]);
+    const allMa30 = indices.map((r) => r[info.ma]);
 
-    // 학습 구간 산점도 (파란 점) - Step 2 완료 후 표시
-    if (hasTraining) {
-      traces.push({
-        x: trainDates, y: trainVals, type: "scatter", mode: "markers",
-        name: `${info.label} (Training)`,
-        marker: { color: "rgba(59, 130, 246, 0.5)", size: 3 },
-        xaxis: xAxis, yaxis: yAxis, showlegend: false,
-      } as Plotly.Data);
-    }
-
-    // 나머지 기간 산점도 (회색 점)
+    // 원시 산점도 (회색 점)
     traces.push({
-      x: hasTraining ? otherDates : dates,
-      y: hasTraining ? otherVals  : indices.map((r) => r[info.key]),
+      x: dates,
+      y: indices.map((r) => r[info.key]),
       type: "scatter", mode: "markers",
       name: `${info.label}`,
       marker: { color: "rgba(156, 163, 175, 0.5)", size: 3 },
@@ -117,33 +108,8 @@ function IndicesSubplotChart({ result }: { result: Step1Response }) {
     } as Plotly.Data);
   }
 
-  // Step 2 완료 시: 학습 구간 배경 표시
-  const trainingStart = hasTraining
-    ? indices.find((r) => r.is_training)?.date
-    : null;
-  const trainingEnd = hasTraining
-    ? [...indices].reverse().find((r) => r.is_training)?.date
-    : null;
-
-  const xAxisNames = ["x", "x2", "x3", "x4"] as const;
-  const trainingShapes = hasTraining
-    ? indexInfo.map((info, idx) => ({
-        type: "rect" as const,
-        xref: xAxisNames[idx] as "x" | "x2" | "x3" | "x4",
-        yref: "paper" as const,
-        x0: trainingStart,
-        x1: trainingEnd,
-        y0: info.row === 1 ? 0.55 : 0.0,
-        y1: info.row === 1 ? 1.0  : 0.45,
-        fillcolor: "rgba(59, 130, 246, 0.07)",
-        line: { width: 0 },
-        layer: "below" as const,
-      }))
-    : [];
-
   // ψ 서브플롯(row=1, col=2)에 WHP 보정 계수 주석 추가
   const psiWhpCoeff     = result.psi_whp_coeff;
-  const psiWhpIntercept = result.psi_whp_intercept;
   const psiWhpR2        = result.psi_whp_r2;
   const hasPsiWhp       = psiWhpCoeff !== null && psiWhpCoeff !== undefined;
 
@@ -168,6 +134,33 @@ function IndicesSubplotChart({ result }: { result: Step1Response }) {
       bgcolor: "rgba(255, 255, 255, 0.7)",
     }] : []),
   ];
+
+  // training period 배경색 shapes (Step 2 완료 후 표시)
+  // 4개 서브플롯에 각각 파란 반투명 rect 추가
+  const trainingShapes: Partial<Plotly.Shape>[] = [];
+  if (trainingStart && trainingEnd) {
+    // axisIdx 1~4에 해당하는 xref/yref 쌍 (paper 기반 y 범위)
+    const subplotDefs = [
+      { xref: "x",  y0: 0.55, y1: 1.0  },  // subplot 1 (row1, col1)
+      { xref: "x2", y0: 0.55, y1: 1.0  },  // subplot 2 (row1, col2)
+      { xref: "x3", y0: 0.0,  y1: 0.45 },  // subplot 3 (row2, col1)
+      { xref: "x4", y0: 0.0,  y1: 0.45 },  // subplot 4 (row2, col2)
+    ];
+    for (const def of subplotDefs) {
+      trainingShapes.push({
+        type: "rect" as const,
+        // xref: Plotly Shape의 xref는 "x"|"x2"|"x3"|"x4" 등 literal 타입 필요
+        xref: def.xref as "x" | "x2" | "x3" | "x4",
+        yref: "paper" as const,
+        x0: trainingStart,
+        x1: trainingEnd,
+        y0: def.y0,
+        y1: def.y1,
+        fillcolor: "rgba(59, 130, 246, 0.07)",
+        line: { width: 0 },
+      } as Partial<Plotly.Shape>);
+    }
+  }
 
   const layout: Partial<Plotly.Layout> = {
     grid: { rows: 2, columns: 2, pattern: "independent" as const },
@@ -199,65 +192,47 @@ function IndicesSubplotChart({ result }: { result: Step1Response }) {
 /**
  * Power Index(Cp) vs Head Index(ψ) scatter plot.
  *
- * 시간 순서에 따른 그라디언트 색상으로 성능 저하 방향을 시각화.
- * Step 2 완료 후에는 학습 구간(파란 점) vs 나머지(회색 점)로 구분.
- *
- * Color logic:
- *   - No training data: viridis colorscale by time index (early=blue, recent=yellow)
- *   - With training data: blue markers for training, gray for the rest
+ * 항상 실제 날짜 기반 Viridis 그라디언트 색상 사용.
+ * 과거=보라, 최근=노랑 — 성능 저하 궤적이 색상 흐름으로 직관적 표현.
  */
 function PowerHeadScatterChart({ result }: { result: Step1Response }) {
-  const indices     = result.indices;
-  const hasTraining = indices.some((r) => r.is_training);
+  const indices = result.indices;
 
-  const traces: Plotly.Data[] = [];
+  // ISO 날짜 문자열 배열 (hover 텍스트용)
+  const dateDates = indices.map((r) => r.date);
+  const midIdx    = Math.floor(indices.length / 2);
 
-  if (hasTraining) {
-    // Step 2 완료: 학습 구간(파란 점) vs 나머지(회색 점) 구분
-    const trainPts = indices.filter((r) => r.is_training);
-    const otherPts = indices.filter((r) => !r.is_training);
+  // 숫자 배열 (0 ~ n-1): Plotly colorscale이 문자열에서 작동하지 않아 숫자로 변환
+  const numericColors = indices.map((_, i) => i);
 
-    traces.push({
-      x: trainPts.map((r) => r.cp),
-      y: trainPts.map((r) => r.psi),
-      type: "scatter",
-      mode: "markers",
-      name: "Training period",
-      text: trainPts.map((r) => r.date),
-      hovertemplate: "%{text}<br>Cp: %{x:.4f}<br>ψ: %{y:.4f}<extra></extra>",
-      marker: { color: "rgba(59, 130, 246, 0.6)", size: 4 },
-    } as Plotly.Data);
-
-    traces.push({
-      x: otherPts.map((r) => r.cp),
-      y: otherPts.map((r) => r.psi),
-      type: "scatter",
-      mode: "markers",
-      name: "Other",
-      text: otherPts.map((r) => r.date),
-      hovertemplate: "%{text}<br>Cp: %{x:.4f}<br>ψ: %{y:.4f}<extra></extra>",
-      marker: { color: "rgba(156, 163, 175, 0.5)", size: 4 },
-    } as Plotly.Data);
-  } else {
-    // Step 2 미완료: 시간 순서 기반 viridis 그라디언트 색상
-    traces.push({
+  const traces: Plotly.Data[] = [
+    {
       x: indices.map((r) => r.cp),
       y: indices.map((r) => r.psi),
       type: "scatter",
       mode: "markers",
       name: "Cp vs ψ",
-      text: indices.map((r) => r.date),
+      text: dateDates,
       hovertemplate: "%{text}<br>Cp: %{x:.4f}<br>ψ: %{y:.4f}<extra></extra>",
       marker: {
-        // 시간 인덱스 0→N 으로 그라디언트 — 초기=보라, 최근=노랑
-        color: indices.map((_, i) => i),
+        // 숫자 인덱스로 Viridis 그라디언트 적용: 0(보라=초기) → n-1(노랑=최근)
+        color: numericColors,
         colorscale: "Viridis",
+        cmin: 0,
+        cmax: indices.length - 1,
         size: 4,
         showscale: true,
-        colorbar: { title: { text: "Time →" }, thickness: 12, len: 0.8 },
+        colorbar: {
+          title: { text: "Date" },
+          // tickvals를 숫자 인덱스로, ticktext를 실제 날짜 문자열로 매핑
+          tickvals: [0, midIdx, indices.length - 1],
+          ticktext: [dateDates[0] ?? "", dateDates[midIdx] ?? "", dateDates[indices.length - 1] ?? ""],
+          thickness: 12,
+          len: 0.8,
+        },
       },
-    } as Plotly.Data);
-  }
+    } as Plotly.Data,
+  ];
 
   return (
     <Plot
@@ -294,15 +269,7 @@ function PowerHeadScatterChart({ result }: { result: Step1Response }) {
  */
 function EfficiencyProxyChart({ result }: { result: Step1Response }) {
   const indices = result.indices;
-  const hasTraining = indices.some((r) => r.is_training);
   const dates = indices.map((r) => r.date);
-
-  const trainingStart = hasTraining
-    ? indices.find((r) => r.is_training)?.date
-    : null;
-  const trainingEnd = hasTraining
-    ? [...indices].reverse().find((r) => r.is_training)?.date
-    : null;
 
   // WHP 회귀 결과 annotation — 우상단에 보정 계수 표시
   const whpAnnotations: Partial<Plotly.Annotations>[] =
@@ -338,13 +305,7 @@ function EfficiencyProxyChart({ result }: { result: Step1Response }) {
         },
       ]}
       layout={{
-        shapes: hasTraining ? [{
-          type: "rect", xref: "x", yref: "paper",
-          x0: trainingStart, x1: trainingEnd,
-          y0: 0, y1: 1,
-          fillcolor: "rgba(59, 130, 246, 0.07)",
-          line: { width: 0 }, layer: "below",
-        }] : [],
+        shapes: [],
         annotations: whpAnnotations,
         xaxis: { title: { text: "Date" } },
         yaxis: { title: { text: "η_proxy (psi·Hz/kW)" } },
@@ -375,16 +336,7 @@ function EfficiencyProxyChart({ result }: { result: Step1Response }) {
  */
 function PumpLoadIndexChart({ result }: { result: Step1Response }) {
   const indices = result.indices;
-  const hasTraining = indices.some((r) => r.is_training);
   const dates = indices.map((r) => r.date);
-
-  // liquid_rate가 없는 날이 많으므로 값이 있는 날만 필터링해서 점 표시
-  const trainingStart = hasTraining
-    ? indices.find((r) => r.is_training)?.date
-    : null;
-  const trainingEnd = hasTraining
-    ? [...indices].reverse().find((r) => r.is_training)?.date
-    : null;
 
   return (
     <Plot
@@ -407,13 +359,7 @@ function PumpLoadIndexChart({ result }: { result: Step1Response }) {
         },
       ]}
       layout={{
-        shapes: hasTraining ? [{
-          type: "rect", xref: "x", yref: "paper",
-          x0: trainingStart, x1: trainingEnd,
-          y0: 0, y1: 1,
-          fillcolor: "rgba(59, 130, 246, 0.07)",
-          line: { width: 0 }, layer: "below",
-        }] : [],
+        shapes: [],
         xaxis: { title: { text: "Date" } },
         yaxis: { title: { text: "Pump Load Index (kW / psi·m³/d)" } },
         legend: { orientation: "h", y: -0.28 },
@@ -526,6 +472,11 @@ export default function Step1Page({ params }: Step1PageProps) {
   const stepComplete = isStepComplete(currentStatus, 1);
   const { data: result, isLoading: resultLoading } = useStep1Result(id, stepComplete);
 
+  // Step 1 자체 전체 기간을 배경색으로 표시 (Step 2/3 완료 여부 무관)
+  // Step 2-B GMM에 의존하지 않으므로 Step 1만 완료되면 항상 배경 표시 가능
+  const trainingStart = result?.data_start ?? null;
+  const trainingEnd   = result?.data_end   ?? null;
+
   // 분석 결과가 있을 때만 시스템 프롬프트 생성 (result가 없으면 빈 문자열)
   const systemPrompt = result
     ? buildStep1SystemPrompt({ wellName: well?.name ?? id, result })
@@ -621,9 +572,6 @@ export default function Step1Page({ params }: Step1PageProps) {
                 <p className="text-xs text-muted-foreground">
                   Under normal operation, all 4 indices should remain constant regardless of frequency.{" "}
                   <span className="text-yellow-600 font-medium">Orange line</span> = 30-day moving average.
-                  {result.indices.some((r) => r.is_training) && (
-                    <> <span className="text-blue-500 font-medium">Blue background</span> = Step 2 training period.</>
-                  )}
                 </p>
                 {/* WHP correction regression results — coefficient displayed on ψ subplot annotation */}
                 {result.psi_whp_r2 !== null && result.psi_whp_r2 !== undefined && (
@@ -636,7 +584,7 @@ export default function Step1Page({ params }: Step1PageProps) {
                 )}
               </CardHeader>
               <CardContent className="h-80 px-2 pb-2">
-                <IndicesSubplotChart result={result as Step1Response} />
+                <IndicesSubplotChart result={result as Step1Response} trainingStart={trainingStart} trainingEnd={trainingEnd} />
               </CardContent>
             </Card>
 
@@ -646,10 +594,7 @@ export default function Step1Page({ params }: Step1PageProps) {
                 <CardTitle className="text-sm">Cp vs ψ — Power-Head Phase Space</CardTitle>
                 <p className="text-xs text-muted-foreground">
                   Scatter of Power Index (Cp) vs Head Index (ψ).
-                  Color encodes time progression (early → recent).
-                  {result.indices.some((r) => r.is_training) && (
-                    <> <span className="text-blue-500 font-medium">Blue</span> = training period.</>
-                  )}
+                  Color encodes date progression — <span className="text-purple-600 font-medium">purple</span> = early, <span className="text-yellow-500 font-medium">yellow</span> = recent (Viridis colorscale).
                 </p>
               </CardHeader>
               <CardContent className="h-64 px-2 pb-2">

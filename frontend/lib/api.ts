@@ -63,13 +63,20 @@ export interface EspDataResponse {
   date_range: { start: string; end: string } | null;
 }
 
-export interface UploadResponse {
+export interface WellUploadResult {
   well_id: string;
   well_name: string;
   records_inserted: number;
   date_range: { start: string; end: string } | null;
   columns_found: string[];
   warnings: string[];
+}
+
+/** 멀티 시트 업로드 결과 */
+export interface UploadResponse {
+  wells: WellUploadResult[];
+  total_wells: number;
+  total_records: number;
   message: string;
 }
 
@@ -198,15 +205,23 @@ export interface Step2Response {
   scores: Step2HealthPoint[];
 }
 
-/** Step 2-B Trend-Residual 건강 점수 시계열 한 점 */
+/** Step 2-B Trend-Residual 편차 점수 시계열 한 점 */
 export interface Step2bScorePoint {
   date: string;
-  health_score: number | null;     // 10(하한) ~ 100(정상)
-  health_status: string | null;    // Normal / Degrading / Critical
-  // 피처별 개별 점수 (Radar 차트: 고장 원인 판별)
-  score_eta:   number | null;      // η_proxy 점수 (효율 지수)
-  score_v_std: number | null;      // v_std 점수 (진동 지수)
-  score_t_eff: number | null;      // t_eff 점수 (냉각 지수)
+  health_score: number | null;     // 하위 호환 유지 (신규 저장 중단)
+  health_status: string | null;    // Stable / Elevated / Anomalous
+  // 피처별 개별 점수 (하위 호환 유지)
+  score_eta:   number | null;
+  score_v_std: number | null;
+  score_t_eff: number | null;
+  // 방향성 Z-score 편차 (MA30 대비, 부호 포함)
+  deviation_eta:   number | null;  // η_proxy Z-score (양수=상승, 음수=하락)
+  deviation_v_std: number | null;  // v_std Z-score
+  deviation_t_eff: number | null;  // t_eff Z-score
+  // MA30 기울기 정규화 이탈도 (부호 포함: 양수=상승, 음수=하락)
+  slope_norm_eta:   number | null;
+  slope_norm_v_std: number | null;
+  slope_norm_t_eff: number | null;
 }
 
 /** Step 2-B 분석 결과: Trend-Residual 건강 점수 시계열 */
@@ -242,13 +257,23 @@ export interface Pillar3Alarm {
   data_available: boolean;
 }
 
-/** Step 3 분석 결과: 3-Pillar 독립 고장 모드 알람 */
+/** Pillar 4 알람 응답 (motor_temp 7일 이동 중앙값) */
+export interface Pillar4Alarm {
+  /** normal / warning / critical / unknown */
+  status: string | null;
+  /** 7일 이동 중앙값 (°C) */
+  current_val: number | null;
+  data_available: boolean;
+}
+
+/** Step 3 분석 결과: 4-Pillar 독립 고장 모드 알람 */
 export interface Step3Response {
   well_id: string;
   computed_at: string | null;
   pillar1: PillarAlarm;   // Hydraulic: ψ 하락 추세
   pillar2: PillarAlarm;   // Mechanical: v_std 상승 추세
   pillar3: Pillar3Alarm;  // Electrical: current_leak 절대값
+  pillar4: Pillar4Alarm;  // Thermal: motor_temp 이동 중앙값
 }
 
 // ============================================================
@@ -329,6 +354,39 @@ export async function runStep3(
 /** Step 3 결과 조회 */
 export async function getStep3Result(wellId: string): Promise<Step3Response> {
   return fetchJson(`${BASE_URL}/wells/${wellId}/analysis/step3`);
+}
+
+/**
+ * Well 통합 데이터 CSV Export
+ * esp_daily_data + residual_data(Step1) + health_scores(Step2)를 JOIN한 CSV 파일을 다운로드.
+ * 브라우저 환경에서만 동작 (blob → <a> 클릭 방식).
+ */
+export async function exportCsv(wellId: string): Promise<void> {
+  // 서버 컴포넌트에서 호출 시 BASE_URL이 백엔드 내부 URL이므로 클라이언트 전용으로 처리
+  const url = `/api/wells/${wellId}/export`;
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(error.detail || `HTTP ${res.status}`);
+  }
+
+  // Content-Disposition 헤더에서 파일명 추출 (없으면 기본값 사용)
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const match = disposition.match(/filename="([^"]+)"/);
+  const filename = match ? match[1] : `well_${wellId}_export.csv`;
+
+  // Blob URL을 생성해 가상 <a> 태그 클릭으로 다운로드 트리거
+  const blob = await res.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = blobUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  // 메모리 해제: 다운로드가 시작된 후 URL 객체 해제
+  URL.revokeObjectURL(blobUrl);
 }
 
 /** Excel 파일 업로드 */

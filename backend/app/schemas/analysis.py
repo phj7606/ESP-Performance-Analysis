@@ -94,29 +94,37 @@ class Step2ResultResponse(BaseModel):
 
 
 # ============================================================
-# Step 2-B 스키마: Trend-Residual Health Scoring
+# Step 2-B 스키마: Trend-Residual Deviation Scoring
 # ============================================================
 
 class Step2bScorePoint(BaseModel):
-    """Trend-Residual 건강 점수 시계열 데이터 한 점"""
+    """Trend-Residual 편차 점수 시계열 데이터 한 점 (기존 score 필드는 하위호환용 유지)"""
     date: str
-    health_score: Optional[float] = None      # 10(하한) ~ 100(정상)
-    health_status: Optional[str] = None       # Normal / Degrading / Critical
-    # 피처별 개별 점수 (Radar 차트: 고장 원인 판별)
-    score_eta:   Optional[float] = None  # η_proxy 점수 (효율 지수)
-    score_v_std: Optional[float] = None  # v_std 점수 (진동 지수)
-    score_t_eff: Optional[float] = None  # t_eff 점수 (냉각 지수)
+    health_score: Optional[float] = None      # 하위 호환 유지 (신규 저장 중단)
+    health_status: Optional[str] = None       # Stable / Elevated / Anomalous (composite_z 기반)
+    # 피처별 개별 점수 (하위 호환 유지, 신규 저장 중단)
+    score_eta:   Optional[float] = None
+    score_v_std: Optional[float] = None
+    score_t_eff: Optional[float] = None
+    # 방향성 Z-score 편차 (MA30 대비, 부호 포함 — 신규 필드)
+    deviation_eta:   Optional[float] = None   # η_proxy 편차 Z-score (양수=상승, 음수=하락)
+    deviation_v_std: Optional[float] = None   # v_std 편차 Z-score
+    deviation_t_eff: Optional[float] = None   # t_eff 편차 Z-score
+    # MA30 기울기 정규화 이탈도 (부호 포함)
+    slope_norm_eta:   Optional[float] = None
+    slope_norm_v_std: Optional[float] = None
+    slope_norm_t_eff: Optional[float] = None
 
 
 class Step2bResultResponse(BaseModel):
-    """Step 2-B 분석 완료 결과 — Trend-Residual 건강 점수 시계열"""
+    """Step 2-B 분석 완료 결과 — Trend-Residual 편차 시계열"""
     well_id: str
     rows_written: int
     scores: list[Step2bScorePoint]
 
 
 # ============================================================
-# Step 3 스키마: 3-Pillar 독립 고장 모드 알람
+# Step 3 스키마: 4-Pillar 독립 고장 모드 알람
 # ============================================================
 
 class Step3RunRequest(BaseModel):
@@ -142,13 +150,21 @@ class Pillar3Alarm(BaseModel):
     data_available: bool = False
 
 
+class Pillar4Alarm(BaseModel):
+    """Pillar 4 알람 응답 (motor_temp 7일 이동 중앙값 기반 온도 알람)"""
+    status: Optional[str] = None          # normal / warning / critical / unknown
+    current_val: Optional[float] = None   # 7일 이동 중앙값 (°C)
+    data_available: bool = False
+
+
 class Step3PillarResponse(BaseModel):
-    """Step 3 분석 완료 결과 — 3-Pillar 독립 고장 모드 알람"""
+    """Step 3 분석 완료 결과 — 4-Pillar 독립 고장 모드 알람"""
     well_id: str
     computed_at: Optional[str] = None
     pillar1: PillarAlarm   # Hydraulic: ψ 하락 추세
     pillar2: PillarAlarm   # Mechanical: v_std 상승 추세
     pillar3: Pillar3Alarm  # Electrical: current_leak 절대값
+    pillar4: Optional[Pillar4Alarm] = None  # Thermal: motor_temp 이동 중앙값
 
 
 # 하위 호환성 유지: 기존 타입 별칭 (rul_predictions 테이블 여전히 존재)

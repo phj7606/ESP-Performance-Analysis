@@ -23,24 +23,33 @@ import { cn } from "@/lib/utils";
 import type { WellResponse } from "@/lib/api";
 
 /**
- * Health score display component
+ * 최신 분석 상태 표시 컴포넌트
+ *
+ * latest_health_score는 Step 2 완료 후 composite Z-score로 업데이트됨.
+ * Z-score 기준: Stable(<1.0) / Elevated(1.0~2.0) / Anomalous(≥2.0)
  */
 function HealthGauge({ score }: { score: number | null }) {
   if (score === null) {
     return <span className="text-xs text-muted-foreground">Not Analysed</span>;
   }
-  const color =
-    score >= 70 ? "text-green-500" : score >= 40 ? "text-yellow-500" : "text-red-500";
+
+  // Z-score 기준으로 상태 분류
+  const isAnomalous = score >= 2.0;
+  const isElevated  = score >= 1.0 && score < 2.0;
+  const color = isAnomalous ? "text-red-500" : isElevated ? "text-yellow-500" : "text-green-500";
+  const label = isAnomalous ? "Anomalous" : isElevated ? "Elevated" : "Stable";
 
   return (
     <div className="flex items-center gap-1">
-      {score >= 70 ? (
-        <CheckCircle className="h-3 w-3 text-green-500" />
-      ) : (
+      {isAnomalous ? (
+        <AlertTriangle className="h-3 w-3 text-red-500" />
+      ) : isElevated ? (
         <AlertTriangle className="h-3 w-3 text-yellow-500" />
+      ) : (
+        <CheckCircle className="h-3 w-3 text-green-500" />
       )}
-      <span className={`text-sm font-semibold ${color}`}>{score.toFixed(0)}</span>
-      <span className="text-xs text-muted-foreground">/ 100</span>
+      <span className={`text-sm font-semibold ${color}`}>{label}</span>
+      <span className="text-xs text-muted-foreground">|Z|={score.toFixed(2)}</span>
     </div>
   );
 }
@@ -95,9 +104,9 @@ function WellCard({ well }: { well: WellResponse }) {
           )}
         </CardHeader>
         <CardContent className="space-y-3">
-          {/* Health score */}
+          {/* 최신 분석 상태 (Step 2 완료 후 composite Z-score 기준) */}
           <div className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">Health Score</span>
+            <span className="text-xs text-muted-foreground">Trend Score</span>
             <HealthGauge score={well.latest_health_score} />
           </div>
 

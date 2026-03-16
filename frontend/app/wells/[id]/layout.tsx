@@ -10,6 +10,7 @@
  * Tab activation (usePathname) is split into a client sub-component.
  */
 
+import { Suspense } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, Activity } from "lucide-react";
@@ -17,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/analysis/StatusBadge";
 import { getWell } from "@/lib/api";
 import { WellTabs } from "./_components/WellTabs";
+import { ExportButton } from "./_components/ExportButton";
 
 interface WellLayoutProps {
   children: React.ReactNode;
@@ -55,21 +57,30 @@ export default async function WellLayout({ children, params }: WellLayoutProps) 
           <StatusBadge status={well.analysis_status} />
         </div>
 
-        {/* Data date range */}
-        {well.date_range && (
-          <span className="text-xs text-muted-foreground">
-            {well.date_range.start} ~ {well.date_range.end}
-          </span>
-        )}
+        {/* 우측: 날짜 범위 + CSV Export 버튼 */}
+        <div className="flex items-center gap-3">
+          {well.date_range && (
+            <span className="text-xs text-muted-foreground">
+              {well.date_range.start} ~ {well.date_range.end}
+            </span>
+          )}
+          {/* 데이터가 없을 때는 비활성화, data_ready 이상일 때 활성화 */}
+          <ExportButton wellId={id} analysisStatus={well.analysis_status} />
+        </div>
       </div>
 
       {/* Step tab navigation (client component – requires usePathname) */}
       <WellTabs wellId={id} analysisStatus={well.analysis_status} />
 
-      {/* Content area for each page */}
-      <div className="flex-1 min-h-0 overflow-auto">
-        {children}
-      </div>
+      {/* Content area for each page.
+          Suspense를 명시적으로 추가하는 이유: loading.tsx가 동일 레벨에 존재하면
+          Next.js가 서버 SSR 시 이 위치에 <Suspense>를 자동 삽입하므로,
+          클라이언트 React 트리에도 같은 구조가 있어야 hydration mismatch를 방지함. */}
+      <Suspense>
+        <div className="flex-1 min-h-0 overflow-auto">
+          {children}
+        </div>
+      </Suspense>
     </div>
   );
 }

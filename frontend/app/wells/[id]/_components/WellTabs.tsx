@@ -48,12 +48,12 @@ export function WellTabs({ wellId, analysisStatus }: WellTabsProps) {
       step: 1,
     },
     {
-      label: "Step 2. Health Score (Trend-Residual)",
+      label: "Step 2. Trend Analysis",
       href: `/wells/${wellId}/step/2`,
       step: 2,
     },
     {
-      label: "Step 2-B. Health Score (GMM)",
+      label: "Step 2-B. Trend Analysis (GMM)",
       href: `/wells/${wellId}/step/2b`,
       step: "2b",
       requiredStatus: 2,   // diagnosis_done(2) 이상이면 접근 가능 (Step 2와 동일 조건)

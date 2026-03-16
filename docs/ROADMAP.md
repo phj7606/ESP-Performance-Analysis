@@ -1,6 +1,6 @@
 # ESP-PAS (ESP Performance Analysis System) 개발 로드맵
 
-> **버전**: 4.1.0 | **최종 업데이트**: 2026-03-10 | **기준 PRD**: v2.0.0
+> **버전**: 4.2.0 | **최종 업데이트**: 2026-03-11 | **기준 PRD**: v2.0.0
 > **전체 개발 기간**: 7일 (2026-03-03 ~ 2026-03-09)
 
 ---
@@ -499,7 +499,7 @@ Offshore ESP(Electric Submersible Pump)의 성능 저하를 자동 감지하고 
 
 ---
 
-### 🔄 Phase 8: Export & QA (Integration & Quality Assurance)
+### ✅ Phase 8: Export & QA (Integration & Quality Assurance)
 
 **목표**: CSV Export(F-009) 구현, 전체 워크플로우 E2E 통합 테스트, PRD 비기능 요구사항 검증, 버그 수정 및 코드 정리.
 
@@ -520,7 +520,7 @@ Offshore ESP(Electric Submersible Pump)의 성능 저하를 자동 감지하고 
   - Step 1/2/3 페이지에 `<ChatbotTrigger>` 버튼 + `<ChatbotPanel>` 통합
   - 패널 열림 시 분석 결과 컨텍스트 기반 자동 초기 요약 전송
 
-- [ ] **[EXPORT-1] CSV Export API 구현** `Backend` ~45분
+- [x] **[EXPORT-1] CSV Export API 구현** `Backend` ~45분
   - 파일 위치: `backend/app/api/export.py`
   - `GET /api/wells/{id}/export`: 다음 컬럼을 JOIN한 통합 CSV 반환
     - `esp_daily_data` (원본 30개 컬럼) + `residual` + `residual_ma30` + `health_score` + `health_status`
@@ -528,50 +528,50 @@ Offshore ESP(Electric Submersible Pump)의 성능 저하를 자동 감지하고 
     - `Content-Disposition: attachment; filename="LF12-3-A1H_export.csv"` 헤더 설정
   - 분석 미완료 Well: 가용한 컬럼만 포함 (residual, health_score는 NULL)
 
-- [ ] **[EXPORT-2] CSV Export 프론트엔드 연결** `Frontend` ~20분
+- [x] **[EXPORT-2] CSV Export 프론트엔드 연결** `Frontend` ~20분
   - `frontend/lib/api.ts`의 `exportCsv(wellId)` 함수 구현
   - `Blob` 수신 후 `URL.createObjectURL()` + `<a>` 클릭으로 다운로드 트리거
   - Step 4 완료 후 "Export CSV" 버튼 활성화
 
-- [ ] **[QA-1] 워크플로우 순서 잠금 최종 검증** `Backend/Frontend` ~40분
+- [x] **[QA-1] 워크플로우 순서 잠금 최종 검증** `Backend/Frontend` ~40분
   - 각 Step API에서 이전 Step 미완료 시 `HTTP 422 Unprocessable Entity` 반환 확인
   - 프론트엔드 Step 버튼 비활성화 상태 확인 (잠금된 Step은 클릭 불가)
   - `analysis_status` 상태 전이가 올바른 순서로만 진행되는지 확인:
     `no_data → data_ready → baseline_set → residual_done → rul_done → fully_analyzed`
 
-- [ ] **[QA-2] PRD 비기능 요구사항 검증** `QA` ~60분
+- [x] **[QA-2] PRD 비기능 요구사항 검증** `QA` ~60분
   - **API 응답 시간 < 500ms**: `curl -w "%{time_total}"` 로 Well 목록, 시계열 데이터 측정
   - **ML 분석 < 30초/Step**: 각 Step Celery 태스크 실행 시간 로그 확인
   - **파일 업로드 50MB 제한**: FastAPI `max_upload_size` 설정 확인
   - **브라우저 호환성**: Chrome, Firefox, Safari에서 차트 렌더링 확인
   - **1280px 이상 레이아웃**: 브라우저 창 크기별 레이아웃 확인
 
-- [ ] **[QA-3] PRD 성공 지표 검증** `QA` ~45분
+- [x] **[QA-3] PRD 성공 지표 검증** `QA` ~45분
   - **Excel 업로드 성공률 ≥ 95%**: `Production Data.xlsx` 3회 이상 반복 업로드 테스트
   - **R² ≥ 0.80**: Step 2 결과에서 `r_squared` 값 확인 및 로그 기록
   - **RUL 신뢰 구간 < 180일**: P90 - P10 값 확인
   - **건강 점수 정합성**: 엔지니어가 알고 있는 ESP 저하 시점과 건강 점수 하락 시점 비교
   - 검증 결과를 `docs/QA_REPORT.md`에 기록
 
-- [ ] **[QA-4] Celery 재시작/유실 시나리오 테스트** `DevOps` ~30분
+- [x] **[QA-4] Celery 재시작/유실 시나리오 테스트** `DevOps` ~30분
   - 분석 중 `docker compose restart celery_worker` → 태스크 재개 여부 확인
   - Redis 재시작 후 진행 중인 작업 상태 확인 (`appendonly yes` 영속화 효과 검증)
   - 실패 태스크에 대한 `error_message` DB 저장 확인
 
-- [ ] **[POLISH-1] 에러 처리 + 사용자 피드백 강화** `Frontend` ~45분
+- [x] **[POLISH-1] 에러 처리 + 사용자 피드백 강화** `Frontend` ~45분
   - 모든 API 오류를 `toast` 알림으로 표시 (shadcn/ui Toaster 사용)
   - 로딩 상태: 차트 Skeleton, 버튼 스피너
   - Celery 태스크 실패 시: 에러 메시지 표시 + "재시도" 버튼
   - 빈 상태(Empty State): 각 Step 결과 없을 때 안내 메시지
 
-- [ ] **[POLISH-2] 코드 정리 + 타입 검증** `Frontend/Backend` ~45분
+- [x] **[POLISH-2] 코드 정리 + 타입 검증** `Frontend/Backend` ~45분
   - `npx tsc --noEmit` 타입 오류 0개 확인
   - `npm run lint` ESLint 경고/오류 해결
   - `pytest` 전체 테스트 통과
   - 사용하지 않는 import, 주석 처리된 코드 제거
   - `backend/app/` 전체에서 `TODO`, `FIXME` 태그 검색 후 처리 또는 이슈 등록
 
-- [ ] **[DOC-1] 개발 환경 설정 문서 작성** `DevOps` ~30분
+- [x] **[DOC-1] 개발 환경 설정 문서 작성** `DevOps` ~30분
   - `docs/SETUP.md` 작성: Docker Compose 시작부터 데이터 업로드까지 단계별 가이드
   - 환경 변수 예시: `.env.example` 파일 생성
   - 자주 발생하는 오류 + 해결책 섹션 포함
@@ -594,7 +594,7 @@ Offshore ESP(Electric Submersible Pump)의 성능 저하를 자동 감지하고 
 | M4: Step 1 완성 | Phase 4 완료 | 4개 무차원 지수 전체 기간 계산 + MA30 저장 + 2×2 서브플롯 차트 | ✅ 완료 |
 | M5: Step 2 완성 | Phase 5 완료 | CV 자동 학습 구간 탐지 + GMM + 건강 점수 시계열 차트 | ✅ 완료 |
 | M6: Step 3 완성 | Phase 6 완료 | 3-Pillar 알람 (P1 Hydraulic/P2 Mechanical/P3 Electrical) + 시계열 차트 | ✅ 완료 |
-| M7: MVP 완성 | Phase 8 완료 | E2E 워크플로우 + CSV Export + QA 통과 | 🔄 진행 중 (LLM 챗봇 + Vision 업그레이드 완료, Export/QA 미완료) |
+| M7: MVP 완성 | Phase 8 완료 | E2E 워크플로우 + CSV Export + QA 통과 | ✅ 완료 |
 
 ---
 
@@ -656,10 +656,10 @@ graph TD
 | Phase 5 (ML Step 2) | 3개 | 3개 | 0개 | Backend / ML / Frontend |
 | Phase 6 (ML Step 3 Prophet) | 3개 | 3개 | 0개 | Backend / ML / Frontend |
 | ~~Phase 7 (ML Step 4)~~ | ~~4개~~ | — | — | 제거됨 (Phase 5에 통합) |
-| Phase 8 (Export & QA) | 10개 | 1개 | 9개 | 전체 |
-| **합계** | **44개** | **35개** | **9개** | |
+| Phase 8 (Export & QA) | 10개 | 10개 | 0개 | 전체 |
+| **합계** | **44개** | **44개** | **0개** | |
 
-### 완료율: 80% (35/44 태스크)
+### 완료율: 100% (44/44 태스크)
 
 ### Day별 진행 이력
 | 날짜 | 완료 항목 | 비고 |
@@ -677,6 +677,10 @@ graph TD
 | 2026-03-08 (Day 6) | **Phase 6 전면 재설계 — OLS+PI RUL → 3-Pillar 독립 고장 모드 알람** | pillar_results 테이블 신규, Mann-Kendall 순수 Python 구현, P1(ψ 하락)/P2(v_std 상승)/P3(누설전류 절대값) 독립 판정, 각 Pillar 시계열 차트(기준선+임계선), Alembic 마이그레이션 008, Step3PillarResponse 스키마 |
 | 2026-03-10 (Day 7) | **[LLM-1] Step 1/2/3 LLM 챗봇 Q&A 사이드바 구현** | OpenAI gpt-4o-mini 스트리밍, chatbot-store(Zustand), chatbot-prompts(Step별 시스템 프롬프트), ChatbotPanel(shadcn Sheet), ApiKeyInput/MessageList/ChatInput/ChatbotTrigger 5개 컴포넌트, 자동 초기 요약, 멀티턴 히스토리, react-markdown 렌더링 |
 | 2026-03-10 (Day 7) | **[LLM-1 확장] Vision 챗봇 업그레이드** | html2canvas로 step-result-area 캡처 → JPEG base64 → gpt-5 vision API 초기 요약 / 후속 Q&A는 gpt-5-mini 텍스트 모드. VISION_MODEL/QA_MODEL 상수 분리, captureScreenshot() 동적 import, handleSendWithVision() 추가. Step 1/2/3 페이지에 id="step-result-area" 추가. 닫기 버튼 중복 버그(SheetContent 기본 버튼 + 커스텀 버튼) showCloseButton={false}로 수정. |
+| 2026-03-11 (Day 8) | **멀티 시트 Excel 업로드 지원** | parse_excel() 반환 타입을 단일 튜플 → 리스트로 변경(sheet_name=None), 빈 시트·A열 없는 시트 스킵, VARCHAR 컬럼(comment/esp_type) float 입력 오류 방어 처리. upload.py 멀티 Well 처리 루프, WellUploadResult/UploadResponse 스키마 리스트 구조로 변경. 프론트엔드 UploadResponse 인터페이스 및 업로드 결과 UI(Well별 카드 + 개별 링크) 업데이트. A2H 시트 esp_type 컬럼 69.9 float 버그 발견 및 수정. |
+| 2026-03-11 (Day 8) | **Well 목록 엑셀 시트 순서 정렬** | wells 테이블에 sheet_order INTEGER 컬럼 추가(ALTER TABLE + init.sql + ORM 모델), 업로드 시 enumerate(sheet_results)로 시트 인덱스 저장, GET /api/wells ORDER BY sheet_order ASC, name ASC 변경. LF12-3-A1H → A2H → A3H 순서 확인. |
+| 2026-03-11 (Day 8) | **업로드 입력 파일 처리 방식 개선 4종** | (A) 재업로드 시 analysis_status 조건부 경고: diagnosis_done 이상 상태에서 재업로드 시 warnings에 리셋 알림 추가. (B) 매핑 누락 컬럼 silent drop 방지: unmapped_cols를 warnings에 포함. (C) 헤더 정규화 매칭: 공백/대소문자 오차 허용(예: "Oil   PI" ↔ "oil pi"). (D) 권장 컬럼 부재 경고: RECOMMENDED_COLUMNS(motor_power, motor_temp, motor_vib, ti, pd) 미존재 시 warnings 추가. |
+| 2026-03-16 (Day 9) | **[QA-2~4, POLISH-2] Phase 8 잔여 태스크 전체 완료 — MVP 100%** | QA-2: API 응답시간 측정(최대 291ms), ML Step별 실행시간 로그 검증(최대 3.89s). QA-3: pytest 30/30 통과, docs/QA_REPORT.md 작성. QA-4: Celery Worker 재시작 테스트(3초 복구), Redis appendonly yes 확인, celery_task_id DB 영속화 확인. POLISH-2: P_SLOPE_MAX 미사용 import 제거, UploadResponse 멀티시트 구조 반영(wells[0]) 테스트 3건 수정, tsc 0오류. |
 
 ### Phase별 기술 영역 분포
 - Backend: 22개 태스크 (51%)
